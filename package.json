@@ -12,7 +12,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "node build/index.js",
     "loadtest": "tsx loadtest/example.ts --room arena --numClients 8",
-    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json",
     "clean": "rimraf build",
     "typecheck": "tsc --noEmit",
     "test": "mocha -r tsx test/**/*.test.ts --exit --timeout 15000"
