@@ -25,7 +25,7 @@ import {
     BOT_ATTACK_RATE_PER_SECOND, BOT_EDGE_MARGIN, BOT_RESPAWN_DELAY_MS,
     BOT_SPEED_FACTOR, DAMAGE_CHARGED, DAMAGE_NORMAL, HUMAN_RESPAWN_DELAY_MS,
     INPUT_TIMEOUT_MS, KNOCKBACK_DECAY_MS, KNOCKBACK_MIN_SPEED,
-    RESPAWN_INVULN_MS, Team, WORLD_HEIGHT, WORLD_WIDTH,
+    BOT_CHARGE_HOLD_MS, RESPAWN_INVULN_MS, Team, WORLD_HEIGHT, WORLD_WIDTH,
     attackHalfBand, attackReach, knockbackSpeed,
 } from "./constants.js";
 
@@ -271,9 +271,17 @@ export class World {
         if (actor.vx < 0) actor.flipX = true;
         else if (actor.vx > 0) actor.flipX = false;
 
+        if (actor.charging) {
+            this.stepBotCharge(actor, nearest);
+            return;
+        }
+
         actor.attackCooldown -= deltaMs;
         if (actor.attackCooldown > 0 || nearest === undefined) return;
-        if (!this.botCanHit(actor, nearest)) return;
+
+        const alcancaNormal = this.botCanHit(actor, nearest, 1);
+        const alcancaCarregado = this.botCanHit(actor, nearest, 2);
+        if (!alcancaNormal && !alcancaCarregado) return;
 
         // Taxa por segundo convertida na chance desta janela de `deltaMs`.
         // Manter a conversão aqui (e não uma constante por tick) é o que torna
@@ -282,7 +290,63 @@ export class World {
         if (Math.random() >= chance) return;
 
         actor.flipX = nearest.x < actor.x;
+
+        if (this.botShouldCharge(nearest, alcancaNormal, alcancaCarregado)) {
+            this.startCharge(actor);
+            return;
+        }
+
         this.beginAttack(actor, false);
+        actor.attackCooldown = BOT_ATTACK_COOLDOWN_MS;
+    }
+
+    /**
+     * Vale a pena carregar em vez de bater logo?
+     *
+     * Carregar NÃO rende mais dano por segundo — o ciclo normal (cooldown 700
+     * + windup 200) tira ~28/s, e o carregado, com a espera do `chargeTime`,
+     * fica em torno de ~26/s. Ou seja, carregar é ferramenta de situação, não
+     * a jogada padrão. As duas situações em que compensa:
+     *
+     *   1. FINALIZAÇÃO — a vida do alvo está na janela em que o carregado mata
+     *      e o normal não. Abater promove e dá aura, o que vale bem mais que a
+     *      diferença de dano.
+     *   2. APROXIMAÇÃO — o alvo está fora do alcance normal mas dentro do
+     *      carregado (que dobra o alcance). Aqui carregar é de graça: não
+     *      existia golpe possível de qualquer forma.
+     */
+    private botShouldCharge(
+        target: Actor, alcancaNormal: boolean, alcancaCarregado: boolean,
+    ): boolean {
+        if (!alcancaCarregado) return false;
+
+        const finaliza = target.currentHealth > DAMAGE_NORMAL
+            && target.currentHealth <= DAMAGE_CHARGED;
+
+        return finaliza || !alcancaNormal;
+    }
+
+    /** Bot com carga em curso: persegue enquanto carrega e escolhe quando soltar. */
+    private stepBotCharge(actor: Actor, nearest: Actor | undefined): void {
+        const elapsed = this.now - actor.chargeStartedAt;
+        actor.chargeRatio = clamp(elapsed / actor.rank.chargeTime, 0, 1);
+
+        // Alvo morreu ou sumiu: não há o que finalizar, desiste sem gastar golpe.
+        if (nearest === undefined) {
+            actor.charging = false;
+            actor.chargeRatio = 0;
+            return;
+        }
+
+        if (elapsed < actor.rank.chargeTime) return;
+
+        // Carga pronta: solta assim que o alvo estiver ao alcance dobrado, ou
+        // desiste de esperar depois de BOT_CHARGE_HOLD_MS.
+        const esperouDemais = elapsed - actor.rank.chargeTime >= BOT_CHARGE_HOLD_MS;
+        if (!this.botCanHit(actor, nearest, 2) && !esperouDemais) return;
+
+        actor.flipX = nearest.x < actor.x;
+        this.releaseAttack(actor);
         actor.attackCooldown = BOT_ATTACK_COOLDOWN_MS;
     }
 
@@ -292,8 +356,11 @@ export class World {
      * Reproduz de forma barata o que `executeAttackHit` testaria: distância
      * dentro do alcance do rank e — para os golpes retos — alvo na faixa à
      * frente. Não é exato de propósito; errar às vezes é o esperado.
+     *
+     * @param mult 1 para golpe normal, 2 para carregado. É o mesmo fator que
+     *        `executeAttackHit` aplica às dimensões da forma.
      */
-    private botCanHit(actor: Actor, target: Actor): boolean {
+    private botCanHit(actor: Actor, target: Actor, mult: number): boolean {
         // Bater em quem acabou de renascer ou de levar dano só gasta o cooldown.
         if (target.isInvulnerable(this.now)) return false;
 
@@ -302,13 +369,13 @@ export class World {
         const dx = to.x - from.x;
         const dy = to.y - from.y;
 
-        const reach = actor.collisionRx + attackReach(actor.rank)
+        const reach = actor.collisionRx + attackReach(actor.rank) * mult
             + target.collisionRx + BOT_ATTACK_RANGE_SLACK;
         // Compara os quadrados: evita a raiz quadrada a cada tick por bot.
         if (dx * dx + dy * dy > reach * reach) return false;
 
         // `Infinity` nos golpes radiais passa direto, sem ramificação extra.
-        return Math.abs(dy) <= attackHalfBand(actor.rank) + target.collisionRy;
+        return Math.abs(dy) <= attackHalfBand(actor.rank) * mult + target.collisionRy;
     }
 
     // -----------------------------------------------------------------------

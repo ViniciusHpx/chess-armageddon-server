@@ -154,6 +154,15 @@ export const BOT_ATTACK_RANGE_SLACK = 20;
 /** Margem das bordas em que o bot inverte o rumo. */
 export const BOT_EDGE_MARGIN = 100;
 
+/**
+ * Quanto tempo o bot segura um golpe já carregado esperando o alvo entrar no
+ * alcance, antes de soltar assim mesmo.
+ *
+ * Sem este teto, um alvo que foge deixaria o bot paralisado segurando a carga
+ * para sempre. Soltar no vazio é melhor: gasta o cooldown e ele volta a agir.
+ */
+export const BOT_CHARGE_HOLD_MS = 1200;
+
 // ---------------------------------------------------------------------------
 // EMPURRÃO DO GOLPE
 // ---------------------------------------------------------------------------

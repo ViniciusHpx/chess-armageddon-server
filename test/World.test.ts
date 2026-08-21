@@ -5,8 +5,33 @@ import { Actor } from "../src/sim/Actor.js";
 import {
     RANKS, TICK_MS, DAMAGE_NORMAL, DAMAGE_CHARGED, HIT_INVULN_MS, BOT_RESPAWN_DELAY_MS, INPUT_TIMEOUT_MS,
     BOT_ATTACK_COOLDOWN_MS, RESPAWN_INVULN_MS, attackHalfBand, attackReach,
-    KNOCKBACK_DECAY_MS, knockbackSpeed, ATTACK_WINDUP_MS,
+    KNOCKBACK_DECAY_MS, knockbackSpeed, ATTACK_WINDUP_MS, BOT_CHARGE_HOLD_MS,
 } from "../src/sim/constants.js";
+
+/**
+ * Roda `fn` com o sorteio do bot sempre passando.
+ *
+ * `stepBot` sorteia se ataca neste tick; sem fixar isso, os testes de decisão
+ * do bot ficariam intermitentes.
+ */
+function comSorteioCerto<T>(fn: () => T): T {
+    const original = Math.random;
+    Math.random = () => 0;
+    try {
+        return fn();
+    } finally {
+        Math.random = original;
+    }
+}
+
+/** Distância em X entre os centros das elipses de duas peças. */
+function afasta(bot: Actor, target: Actor, distancia: number): void {
+    bot.x = 1200;
+    bot.y = 900;
+    target.x = bot.x + distancia;
+    target.y = 900;
+    target.invulnUntil = 0;
+}
 
 /** Avança a simulação em passos de um tick. */
 function advance(world: World, ms: number): void {
@@ -423,6 +448,115 @@ describe("World (simulação)", () => {
         const parouEm = target.x;
         advance(world, 1000);
         assert.strictEqual(target.x, parouEm, "sem empurrão ativo o alvo não pode continuar deslizando");
+    });
+
+    it("o bot bate normal quando o alvo está inteiro e ao alcance", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const target = world.addPlayer("b", "enemy", "B");
+        afasta(bot, target, 110);
+
+        comSorteioCerto(() => world.tick(TICK_MS));
+
+        assert.strictEqual(bot.charging, false, "alvo inteiro e colado não justifica carregar");
+        assert.strictEqual(bot.attacking, true);
+        assert.strictEqual(bot.charged, false);
+    });
+
+    it("o bot carrega para finalizar quando o normal não mataria", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const target = world.addPlayer("b", "enemy", "B");
+        afasta(bot, target, 110);
+
+        // Janela em que só o carregado mata: acima do dano normal, até o dobro.
+        target.currentHealth = DAMAGE_NORMAL + 10;
+
+        comSorteioCerto(() => world.tick(TICK_MS));
+
+        assert.strictEqual(bot.charging, true, "deveria carregar para fechar o abate");
+        assert.strictEqual(bot.attacking, false);
+    });
+
+    it("o bot carrega quando o alvo só está no alcance dobrado", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const target = world.addPlayer("b", "enemy", "B");
+
+        // Entre o alcance normal (~200) e o carregado (~280) do peão.
+        afasta(bot, target, 240);
+
+        comSorteioCerto(() => world.tick(TICK_MS));
+
+        assert.strictEqual(bot.charging, true, "fora do alcance normal, carregar é de graça");
+    });
+
+    it("a carga do bot sai com o dano dobrado", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const target = world.addPlayer("b", "enemy", "B");
+        target.rankKey = "TOWER"; // vida 200: sobrevive ao carregado e dá para medir
+        target.maxHealth = RANKS.TOWER.health;
+        target.currentHealth = RANKS.TOWER.health;
+
+        comSorteioCerto(() => {
+            afasta(bot, target, 240); // fora do alcance normal: vira carga
+            world.tick(TICK_MS);
+            assert.strictEqual(bot.charging, true);
+
+            // Segura a pose enquanto a carga corre e o golpe conecta.
+            const passos = (RANKS.PAWN.chargeTime + ATTACK_WINDUP_MS * 2) / TICK_MS;
+            for (let i = 0; i < passos; i++) {
+                afasta(bot, target, 110); // alvo entrou no alcance
+                target.invulnUntil = 0;
+                world.tick(TICK_MS);
+            }
+        });
+
+        assert.strictEqual(
+            RANKS.TOWER.health - target.currentHealth, DAMAGE_CHARGED,
+            "o golpe do bot deveria ter saído carregado",
+        );
+    });
+
+    it("o bot desiste da carga se o alvo some", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const target = world.addPlayer("b", "enemy", "B");
+        afasta(bot, target, 240);
+
+        comSorteioCerto(() => world.tick(TICK_MS));
+        assert.strictEqual(bot.charging, true);
+
+        world.remove(target.id);
+        world.tick(TICK_MS);
+
+        assert.strictEqual(bot.charging, false, "sem alvo não há o que finalizar");
+        assert.strictEqual(bot.attacking, false, "e não gasta golpe no vazio");
+    });
+
+    it("o bot não fica preso segurando a carga se o alvo foge", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const target = world.addPlayer("b", "enemy", "B");
+
+        comSorteioCerto(() => {
+            afasta(bot, target, 240);
+            world.tick(TICK_MS);
+            assert.strictEqual(bot.charging, true);
+
+            // Alvo some no horizonte durante toda a carga e a espera.
+            const passos = (RANKS.PAWN.chargeTime + BOT_CHARGE_HOLD_MS + TICK_MS * 4) / TICK_MS;
+            for (let i = 0; i < passos; i++) {
+                bot.x = 1200;
+                bot.y = 900;
+                target.x = 3000;
+                target.y = 900;
+                world.tick(TICK_MS);
+            }
+        });
+
+        assert.strictEqual(bot.charging, false, "tem de soltar em vez de segurar para sempre");
     });
 
     it("o personagem não sai do mapa", () => {
