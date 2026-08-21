@@ -26,6 +26,10 @@ export class ActorState extends Schema {
     @type("uint16") maxHp: number = 0;
     @type("uint16") aura: number = 0;
 
+    /** Placar da sessão, exibido no painel do TAB. */
+    @type("uint16") kills: number = 0;
+    @type("uint16") deaths: number = 0;
+
     @type("boolean") alive: boolean = true;
     @type("boolean") invuln: boolean = false;
 

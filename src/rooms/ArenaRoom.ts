@@ -149,6 +149,9 @@ export class ArenaRoom extends Room {
         s.hp = Math.max(0, Math.round(actor.currentHealth));
         s.maxHp = actor.maxHealth;
         s.aura = Math.min(65535, actor.aura);
+        // Satura em vez de estourar o uint16: uma sala de horas não vira 0.
+        s.kills = Math.min(65535, actor.kills);
+        s.deaths = Math.min(65535, actor.deaths);
         s.alive = actor.alive;
         s.invuln = actor.isInvulnerable(this.world.now);
         s.attacking = actor.attacking;

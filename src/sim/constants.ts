@@ -125,13 +125,68 @@ export const BOT_RESPAWN_DELAY_MS = 1000;
 
 /** Bots andam a 25% da velocidade do rank (mantido do original). */
 export const BOT_SPEED_FACTOR = 0.25;
-/** Distância em que o bot considera que há inimigo ao alcance. */
-export const BOT_ATTACK_RANGE = 100;
-export const BOT_ATTACK_COOLDOWN_MS = 2000;
-/** Chance por tick de o bot atacar quando há inimigo ao alcance. */
-export const BOT_ATTACK_CHANCE = 0.02;
+
+/**
+ * Tempo mínimo entre dois golpes do mesmo bot.
+ *
+ * Era 2000 ms e, somado ao sorteio abaixo, deixava o bot quase inofensivo.
+ */
+export const BOT_ATTACK_COOLDOWN_MS = 700;
+
+/**
+ * Golpes por segundo que o bot tenta desferir enquanto tem alvo ao alcance.
+ *
+ * É uma taxa por SEGUNDO, não uma chance por tick: a conversão em
+ * `stepBot` usa o delta real, então mudar `TICK_MS` não altera a
+ * agressividade. Antes era `0.02` por tick, o que a amarrava aos 20 ticks/s
+ * e dava ~2,5 s de espera aleatória em cima do cooldown.
+ */
+export const BOT_ATTACK_RATE_PER_SECOND = 3;
+
+/**
+ * Folga somada ao alcance calculado, em pixels.
+ *
+ * O alvo se mexe durante os `ATTACK_WINDUP_MS` do golpe, então mirar no
+ * alcance exato erraria quase sempre contra quem está fugindo.
+ */
+export const BOT_ATTACK_RANGE_SLACK = 20;
+
 /** Margem das bordas em que o bot inverte o rumo. */
 export const BOT_EDGE_MARGIN = 100;
+
+/**
+ * Alcance do golpe, do centro da elipse até a ponta da forma.
+ *
+ * Serve só para a IA decidir QUANDO bater — o dano continua saindo da
+ * geometria exata de `World.executeAttackHit()`. Antes a IA usava 100 px fixos
+ * para todo rank: o peão (alcance 80) atacava fora e a rainha (150) só colada.
+ */
+export function attackReach(rank: RankConfig): number {
+    const atk = rank.attack;
+    switch (atk.type) {
+        case "rectangle": return atk.length;
+        case "circle": return atk.radius;
+        case "lshape": return atk.forwardLength;
+        case "diamond": return atk.radius;
+    }
+}
+
+/**
+ * Meia-altura (em Y) da área que o golpe cobre.
+ *
+ * Golpes retos (peão, cavalo) só acertam quem está na faixa à frente; os
+ * radiais (torre, bispo, rainha) pegam em volta e não têm restrição — daí o
+ * `Infinity`, que dispensa um `if` na comparação.
+ */
+export function attackHalfBand(rank: RankConfig): number {
+    const atk = rank.attack;
+    switch (atk.type) {
+        case "rectangle": return atk.width / 2;
+        case "lshape": return atk.width / 2 + atk.sideLength / 2;
+        case "circle":
+        case "diamond": return Infinity;
+    }
+}
 
 /**
  * Tempo sem receber entrada depois do qual o personagem para.

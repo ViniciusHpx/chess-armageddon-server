@@ -37,6 +37,13 @@ export class Actor {
     /** Instante a partir do qual pode renascer. */
     respawnAt = 0;
 
+    /**
+     * Placar da sessão. Sobrevive à morte e à promoção de propósito: só some
+     * quando o ator sai da sala. Ver `World.applyDamage`.
+     */
+    kills = 0;
+    deaths = 0;
+
     // --- ataque ---
     attacking = false;
     /** Instante em que o dano do golpe em curso será aplicado. */

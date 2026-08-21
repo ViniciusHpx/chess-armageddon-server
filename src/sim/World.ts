@@ -21,10 +21,11 @@ import {
 } from "./geometry.js";
 import { angleBetween, clamp, distance, randInt } from "./mathx.js";
 import {
-    ATTACK_WINDUP_MS, BOT_ATTACK_CHANCE, BOT_ATTACK_COOLDOWN_MS, BOT_ATTACK_RANGE,
-    BOT_EDGE_MARGIN, BOT_RESPAWN_DELAY_MS, BOT_SPEED_FACTOR, DAMAGE_CHARGED,
-    DAMAGE_NORMAL, HUMAN_RESPAWN_DELAY_MS, INPUT_TIMEOUT_MS, RESPAWN_INVULN_MS,
-    Team, WORLD_HEIGHT, WORLD_WIDTH,
+    ATTACK_WINDUP_MS, BOT_ATTACK_COOLDOWN_MS, BOT_ATTACK_RANGE_SLACK,
+    BOT_ATTACK_RATE_PER_SECOND, BOT_EDGE_MARGIN, BOT_RESPAWN_DELAY_MS,
+    BOT_SPEED_FACTOR, DAMAGE_CHARGED, DAMAGE_NORMAL, HUMAN_RESPAWN_DELAY_MS,
+    INPUT_TIMEOUT_MS, RESPAWN_INVULN_MS, Team, WORLD_HEIGHT, WORLD_WIDTH,
+    attackHalfBand, attackReach,
 } from "./constants.js";
 
 /** Evento de combate emitido para o cliente reagir (som, shake, feedback). */
@@ -269,15 +270,43 @@ export class World {
         else if (actor.vx > 0) actor.flipX = false;
 
         actor.attackCooldown -= deltaMs;
-        if (actor.attackCooldown <= 0 && nearest !== undefined) {
-            const inRange = distance(actor.x, actor.y, nearest.x, nearest.y) < BOT_ATTACK_RANGE;
+        if (actor.attackCooldown > 0 || nearest === undefined) return;
+        if (!this.botCanHit(actor, nearest)) return;
 
-            if (inRange && Math.random() < BOT_ATTACK_CHANCE) {
-                actor.flipX = nearest.x < actor.x;
-                this.beginAttack(actor, false);
-                actor.attackCooldown = BOT_ATTACK_COOLDOWN_MS;
-            }
-        }
+        // Taxa por segundo convertida na chance desta janela de `deltaMs`.
+        // Manter a conversão aqui (e não uma constante por tick) é o que torna
+        // a agressividade independente de TICK_MS.
+        const chance = 1 - Math.exp(-BOT_ATTACK_RATE_PER_SECOND * (deltaMs / 1000));
+        if (Math.random() >= chance) return;
+
+        actor.flipX = nearest.x < actor.x;
+        this.beginAttack(actor, false);
+        actor.attackCooldown = BOT_ATTACK_COOLDOWN_MS;
+    }
+
+    /**
+     * O golpe do bot tem chance real de acertar este alvo?
+     *
+     * Reproduz de forma barata o que `executeAttackHit` testaria: distância
+     * dentro do alcance do rank e — para os golpes retos — alvo na faixa à
+     * frente. Não é exato de propósito; errar às vezes é o esperado.
+     */
+    private botCanHit(actor: Actor, target: Actor): boolean {
+        // Bater em quem acabou de renascer ou de levar dano só gasta o cooldown.
+        if (target.isInvulnerable(this.now)) return false;
+
+        const from = actor.ellipseCenter();
+        const to = target.ellipseCenter();
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+
+        const reach = actor.collisionRx + attackReach(actor.rank)
+            + target.collisionRx + BOT_ATTACK_RANGE_SLACK;
+        // Compara os quadrados: evita a raiz quadrada a cada tick por bot.
+        if (dx * dx + dy * dy > reach * reach) return false;
+
+        // `Infinity` nos golpes radiais passa direto, sem ramificação extra.
+        return Math.abs(dy) <= attackHalfBand(actor.rank) + target.collisionRy;
     }
 
     // -----------------------------------------------------------------------
@@ -410,6 +439,8 @@ export class World {
 
         attacker.addAuraFromKill(target);
         attacker.promote();
+        attacker.kills++;
+        target.deaths++;
         this.kill(target);
         this.kills.push({ killerId: attacker.id, victimId: target.id });
     }

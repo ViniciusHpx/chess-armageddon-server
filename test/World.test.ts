@@ -4,6 +4,7 @@ import { World } from "../src/sim/World.js";
 import { Actor } from "../src/sim/Actor.js";
 import {
     RANKS, TICK_MS, DAMAGE_NORMAL, DAMAGE_CHARGED, HIT_INVULN_MS, BOT_RESPAWN_DELAY_MS, INPUT_TIMEOUT_MS,
+    BOT_ATTACK_COOLDOWN_MS, RESPAWN_INVULN_MS, attackHalfBand, attackReach,
 } from "../src/sim/constants.js";
 
 /** Avança a simulação em passos de um tick. */
@@ -198,6 +199,96 @@ describe("World (simulação)", () => {
         assert.strictEqual(
             Math.round(actor.x), Math.round(parouEm),
             "sem entrada nova o personagem não pode continuar andando",
+        );
+    });
+
+    it("o placar conta o abate para quem matou e a morte para quem morreu", () => {
+        const world = new World();
+        const attacker = world.addPlayer("a", "ally", "A");
+        const target = world.addPlayer("b", "enemy", "B");
+        const bystander = world.addPlayer("c", "enemy", "C");
+
+        for (let i = 0; i < 4; i++) {
+            placeSideBySide(attacker, target);
+            swing(world, attacker);
+            advance(world, 300);
+            advance(world, HIT_INVULN_MS + TICK_MS);
+        }
+
+        assert.strictEqual(attacker.kills, 1);
+        assert.strictEqual(attacker.deaths, 0);
+        assert.strictEqual(target.kills, 0);
+        assert.strictEqual(target.deaths, 1);
+        assert.strictEqual(bystander.deaths, 0, "quem não estava na briga não pontua");
+    });
+
+    it("o placar sobrevive ao renascimento", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        actor.kills = 3;
+        actor.deaths = 2;
+
+        world.requestRespawn(actor);
+        advance(world, 2000);
+
+        assert.strictEqual(actor.kills, 3, "renascer não zera o placar (a aura sim)");
+        assert.strictEqual(actor.deaths, 2);
+    });
+
+    it("o bot ataca quando o inimigo entra no alcance do seu rank", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const target = world.addPlayer("b", "enemy", "B");
+        placeSideBySide(bot, target);
+
+        // Bem além do alcance: não deve sair golpe nenhum.
+        target.x = bot.x + 900;
+        advance(world, 3000);
+        assert.strictEqual(bot.attacking, false, "não ataca alvo fora de alcance");
+        assert.strictEqual(target.currentHealth, RANKS.PAWN.health);
+
+        // Ao alcance: em poucos segundos tem de ter acertado.
+        placeSideBySide(bot, target);
+        target.invulnUntil = 0;
+        for (let i = 0; i < 60 && target.currentHealth === RANKS.PAWN.health; i++) {
+            placeSideBySide(bot, target); // o bot anda; a pose é reposta a cada passo
+            world.tick(TICK_MS);
+        }
+
+        assert.ok(
+            target.currentHealth < RANKS.PAWN.health,
+            "o bot deveria ter acertado em até 3 s com o alvo colado",
+        );
+    });
+
+    it("o bot não desperdiça golpe em alvo invulnerável", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const target = world.addPlayer("b", "enemy", "B");
+
+        target.invulnUntil = world.now + RESPAWN_INVULN_MS * 4;
+        for (let i = 0; i < 40; i++) {
+            placeSideBySide(bot, target);
+            world.tick(TICK_MS);
+            if (bot.attacking) break;
+        }
+
+        assert.strictEqual(bot.attacking, false, "invulnerável não vale o cooldown");
+        assert.ok(bot.attackCooldown <= BOT_ATTACK_COOLDOWN_MS);
+    });
+
+    it("o alcance e a faixa do golpe seguem a forma de cada rank", () => {
+        // Retos: alcance para frente e faixa limitada em Y.
+        assert.strictEqual(attackReach(RANKS.PAWN), RANKS.PAWN.attack.length);
+        assert.strictEqual(attackHalfBand(RANKS.PAWN), RANKS.PAWN.attack.width / 2);
+
+        // Radiais: pegam em volta, então não há restrição de faixa.
+        assert.strictEqual(attackReach(RANKS.QUEEN), RANKS.QUEEN.attack.radius);
+        assert.strictEqual(attackHalfBand(RANKS.QUEEN), Infinity);
+
+        assert.ok(
+            attackReach(RANKS.QUEEN) > attackReach(RANKS.PAWN),
+            "a rainha alcança mais longe que o peão — era isso que os 100 px fixos ignoravam",
         );
     });
 
