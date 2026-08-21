@@ -5,6 +5,7 @@ import { Actor } from "../src/sim/Actor.js";
 import {
     RANKS, TICK_MS, DAMAGE_NORMAL, DAMAGE_CHARGED, HIT_INVULN_MS, BOT_RESPAWN_DELAY_MS, INPUT_TIMEOUT_MS,
     BOT_ATTACK_COOLDOWN_MS, RESPAWN_INVULN_MS, attackHalfBand, attackReach,
+    KNOCKBACK_DECAY_MS, knockbackSpeed, ATTACK_WINDUP_MS,
 } from "../src/sim/constants.js";
 
 /** Avança a simulação em passos de um tick. */
@@ -278,18 +279,150 @@ describe("World (simulação)", () => {
     });
 
     it("o alcance e a faixa do golpe seguem a forma de cada rank", () => {
+        // `AttackConfig` é uma união discriminada: sem estreitar pelo `type`,
+        // o TypeScript não deixa ler `length`/`radius`.
+        const peao = RANKS.PAWN.attack;
+        const rainha = RANKS.QUEEN.attack;
+        if (peao.type !== "rectangle") throw new Error("o peão deixou de ser retangular");
+        if (rainha.type !== "circle") throw new Error("a rainha deixou de ser circular");
+
         // Retos: alcance para frente e faixa limitada em Y.
-        assert.strictEqual(attackReach(RANKS.PAWN), RANKS.PAWN.attack.length);
-        assert.strictEqual(attackHalfBand(RANKS.PAWN), RANKS.PAWN.attack.width / 2);
+        assert.strictEqual(attackReach(RANKS.PAWN), peao.length);
+        assert.strictEqual(attackHalfBand(RANKS.PAWN), peao.width / 2);
 
         // Radiais: pegam em volta, então não há restrição de faixa.
-        assert.strictEqual(attackReach(RANKS.QUEEN), RANKS.QUEEN.attack.radius);
+        assert.strictEqual(attackReach(RANKS.QUEEN), rainha.radius);
         assert.strictEqual(attackHalfBand(RANKS.QUEEN), Infinity);
 
         assert.ok(
             attackReach(RANKS.QUEEN) > attackReach(RANKS.PAWN),
             "a rainha alcança mais longe que o peão — era isso que os 100 px fixos ignoravam",
         );
+    });
+
+    it("o golpe empurra o alvo para longe do atacante", () => {
+        const world = new World();
+        const attacker = world.addPlayer("a", "ally", "A");
+        const target = world.addPlayer("b", "enemy", "B");
+        placeSideBySide(attacker, target);
+
+        const antes = target.x;
+        swing(world, attacker);
+        advance(world, ATTACK_WINDUP_MS + KNOCKBACK_DECAY_MS * 4);
+
+        assert.ok(
+            target.x > antes + 20,
+            `o alvo à direita deveria ter sido empurrado para a direita (foi de ${antes} para ${target.x})`,
+        );
+        assert.ok(
+            Math.abs(target.y - attacker.y) < 5,
+            "alvo alinhado em Y não deveria ganhar empurrão vertical",
+        );
+    });
+
+    it("o golpe carregado empurra mais que o normal, mas não o dobro", () => {
+        const medir = (carregado: boolean): number => {
+            const world = new World();
+            const attacker = world.addPlayer("a", "ally", "A");
+            const target = world.addPlayer("b", "enemy", "B");
+            placeSideBySide(attacker, target);
+            const antes = target.x;
+
+            world.startCharge(attacker);
+            if (carregado) advance(world, RANKS.PAWN.chargeTime + TICK_MS);
+            placeSideBySide(attacker, target);
+            world.releaseAttack(attacker);
+            advance(world, ATTACK_WINDUP_MS + KNOCKBACK_DECAY_MS * 6);
+
+            return target.x - antes;
+        };
+
+        const normal = medir(false);
+        const carregado = medir(true);
+
+        assert.ok(carregado > normal, "carregado tem de empurrar mais");
+        assert.ok(
+            carregado < normal * 2,
+            `o empurrão do carregado (${carregado}) não pode dobrar o do normal (${normal}) — ` +
+            "seria arremessar o alvo para fora da briga",
+        );
+    });
+
+    it("peça pesada é empurrada menos que peça leve", () => {
+        // A raiz da massa é o que impede a torre de virar uma parede imóvel.
+        const peao = knockbackSpeed(false, RANKS.PAWN.mass);
+        const torre = knockbackSpeed(false, RANKS.TOWER.mass);
+
+        assert.ok(torre < peao, "a torre (massa 4) tem de resistir mais que o peão");
+        assert.ok(
+            torre > peao / RANKS.TOWER.mass,
+            "mas não pode ser proporcional à massa crua: aí ela mal sairia do lugar",
+        );
+    });
+
+    it("um golpe em três inimigos espalha cada um na sua direção", () => {
+        const world = new World();
+        const attacker = world.addPlayer("a", "ally", "A");
+        attacker.rankKey = "QUEEN"; // golpe circular, pega em volta
+        attacker.x = 1500;
+        attacker.y = 900;
+
+        // Um acima, um na linha e um abaixo, todos ao alcance do círculo.
+        const alvos = ["b", "c", "d"].map((id, i) => {
+            const t = world.addPlayer(id, "enemy", id.toUpperCase());
+            t.x = 1580;
+            t.y = 830 + i * 70;
+            return t;
+        });
+        const antes = alvos.map((t) => ({ x: t.x, y: t.y }));
+
+        swing(world, attacker);
+        advance(world, ATTACK_WINDUP_MS + KNOCKBACK_DECAY_MS * 4);
+
+        alvos.forEach((t, i) => {
+            assert.ok(t.x > antes[i].x, `alvo ${i} deveria ter sido empurrado para longe em X`);
+        });
+
+        // O de cima sobe, o de baixo desce: leque, não bloco.
+        assert.ok(alvos[0].y < antes[0].y, "o alvo de cima deveria subir");
+        assert.ok(alvos[2].y > antes[2].y, "o alvo de baixo deveria descer");
+    });
+
+    it("alvo invulnerável não leva dano nem empurrão", () => {
+        const world = new World();
+        const attacker = world.addPlayer("a", "ally", "A");
+        const target = world.addPlayer("b", "enemy", "B");
+        placeSideBySide(attacker, target);
+
+        target.invulnUntil = world.now + 10_000;
+        const antesX = target.x;
+        const antesHp = target.currentHealth;
+
+        swing(world, attacker);
+        advance(world, ATTACK_WINDUP_MS + KNOCKBACK_DECAY_MS * 4);
+
+        assert.strictEqual(target.currentHealth, antesHp, "invulnerável não perde vida");
+        assert.strictEqual(
+            Math.round(target.x), Math.round(antesX),
+            "e também não pode ser arrastado: golpe que não conecta não empurra",
+        );
+    });
+
+    it("o empurrão morre sozinho e não deixa o alvo à deriva", () => {
+        const world = new World();
+        const attacker = world.addPlayer("a", "ally", "A");
+        const target = world.addPlayer("b", "enemy", "B");
+        placeSideBySide(attacker, target);
+
+        swing(world, attacker);
+        advance(world, ATTACK_WINDUP_MS + KNOCKBACK_DECAY_MS * 10);
+
+        assert.strictEqual(target.knockbackVx, 0);
+        assert.strictEqual(target.knockbackVy, 0);
+
+        const parouEm = target.x;
+        advance(world, 1000);
+        assert.strictEqual(target.x, parouEm, "sem empurrão ativo o alvo não pode continuar deslizando");
     });
 
     it("o personagem não sai do mapa", () => {

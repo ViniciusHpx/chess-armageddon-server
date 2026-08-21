@@ -154,6 +154,49 @@ export const BOT_ATTACK_RANGE_SLACK = 20;
 /** Margem das bordas em que o bot inverte o rumo. */
 export const BOT_EDGE_MARGIN = 100;
 
+// ---------------------------------------------------------------------------
+// EMPURRÃO DO GOLPE
+// ---------------------------------------------------------------------------
+
+/**
+ * Velocidade inicial do empurrão, em px/s, de um golpe normal sobre uma peça
+ * de massa 1 (o peão).
+ */
+export const KNOCKBACK_SPEED = 420;
+
+/**
+ * Quanto o golpe carregado empurra a mais.
+ *
+ * Deliberadamente MENOR que o multiplicador de dano (que é 2): dobrar o dano e
+ * o empurrão junto faria o golpe carregado arremessar o alvo para fora da
+ * briga, e quem levou não teria como revidar.
+ */
+export const KNOCKBACK_CHARGED_FACTOR = 1.8;
+
+/**
+ * Constante de tempo do decaimento exponencial, em ms.
+ *
+ * O deslocamento total é aproximadamente `velocidade * (esta constante / 1000)`
+ * — cerca de 63 px num peão, 113 no golpe carregado.
+ */
+export const KNOCKBACK_DECAY_MS = 150;
+
+/** Abaixo disto o empurrão é zerado, para o alvo não ficar à deriva. */
+export const KNOCKBACK_MIN_SPEED = 5;
+
+/**
+ * Velocidade inicial do empurrão sobre um alvo de massa `targetMass`.
+ *
+ * Divide pela RAIZ da massa, e não pela massa: com a massa crua a torre
+ * (massa 4) mal se mexeria enquanto o peão (massa 1) voaria quatro vezes mais
+ * longe. A raiz mantém a diferença perceptível sem ficar discrepante — é o
+ * mesmo motivo pelo qual o carregado usa 1,8 e não 2.
+ */
+export function knockbackSpeed(charged: boolean, targetMass: number): number {
+    const force = charged ? KNOCKBACK_SPEED * KNOCKBACK_CHARGED_FACTOR : KNOCKBACK_SPEED;
+    return force / Math.sqrt(Math.max(targetMass, 0.01));
+}
+
 /**
  * Alcance do golpe, do centro da elipse até a ponta da forma.
  *

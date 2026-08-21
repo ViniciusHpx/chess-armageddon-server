@@ -24,8 +24,9 @@ import {
     ATTACK_WINDUP_MS, BOT_ATTACK_COOLDOWN_MS, BOT_ATTACK_RANGE_SLACK,
     BOT_ATTACK_RATE_PER_SECOND, BOT_EDGE_MARGIN, BOT_RESPAWN_DELAY_MS,
     BOT_SPEED_FACTOR, DAMAGE_CHARGED, DAMAGE_NORMAL, HUMAN_RESPAWN_DELAY_MS,
-    INPUT_TIMEOUT_MS, RESPAWN_INVULN_MS, Team, WORLD_HEIGHT, WORLD_WIDTH,
-    attackHalfBand, attackReach,
+    INPUT_TIMEOUT_MS, KNOCKBACK_DECAY_MS, KNOCKBACK_MIN_SPEED,
+    RESPAWN_INVULN_MS, Team, WORLD_HEIGHT, WORLD_WIDTH,
+    attackHalfBand, attackReach, knockbackSpeed,
 } from "./constants.js";
 
 /** Evento de combate emitido para o cliente reagir (som, shake, feedback). */
@@ -176,8 +177,9 @@ export class World {
 
         for (const actor of this.actors.values()) {
             if (!actor.alive) continue;
-            actor.x += actor.vx * dt;
-            actor.y += actor.vy * dt;
+            actor.x += (actor.vx + actor.knockbackVx) * dt;
+            actor.y += (actor.vy + actor.knockbackVy) * dt;
+            this.decayKnockback(actor, deltaMs);
         }
 
         resolveCollisions(this.actors.values());
@@ -434,7 +436,19 @@ export class World {
 
     private applyDamage(attacker: Actor, target: Actor, damage: number): void {
         attacker.hitThisAttack.add(target.id);
+
+        // Golpe que não conecta não empurra. Sem esta guarda, quem acabou de
+        // renascer (ou de levar dano) seria arrastado pelo mapa sem perder
+        // vida — `takeDamage` recusa o dano, mas o empurrão passaria.
+        if (target.isInvulnerable(this.now)) return;
+
         const killed = target.takeDamage(damage, this.now);
+
+        // Cada alvo é empurrado na SUA direção (do atacante para ele), então
+        // um golpe que pega três inimigos os espalha em leque, não em bloco.
+        // Vem antes do abate: `kill()` zera o empurrão de quem morreu.
+        this.pushBack(attacker, target);
+
         if (!killed) return;
 
         attacker.addAuraFromKill(target);
@@ -445,12 +459,49 @@ export class World {
         this.kills.push({ killerId: attacker.id, victimId: target.id });
     }
 
+    /** Empurra `target` para longe de `attacker`, com a força do golpe atual. */
+    private pushBack(attacker: Actor, target: Actor): void {
+        const from = attacker.ellipseCenter();
+        const to = target.ellipseCenter();
+        let dx = to.x - from.x;
+        let dy = to.y - from.y;
+        let length = Math.hypot(dx, dy);
+
+        // Centros praticamente coincidentes: sem direção definida, empurra
+        // para onde o atacante está olhando.
+        if (length < 1e-3) {
+            dx = attacker.flipX ? -1 : 1;
+            dy = 0;
+            length = 1;
+        }
+
+        const speed = knockbackSpeed(attacker.charged, target.rank.mass);
+        target.knockbackVx = (dx / length) * speed;
+        target.knockbackVy = (dy / length) * speed;
+    }
+
+    /** Decaimento exponencial: independe do tamanho do tick. */
+    private decayKnockback(actor: Actor, deltaMs: number): void {
+        if (actor.knockbackVx === 0 && actor.knockbackVy === 0) return;
+
+        const decay = Math.exp(-deltaMs / KNOCKBACK_DECAY_MS);
+        actor.knockbackVx *= decay;
+        actor.knockbackVy *= decay;
+
+        if (Math.hypot(actor.knockbackVx, actor.knockbackVy) < KNOCKBACK_MIN_SPEED) {
+            actor.knockbackVx = 0;
+            actor.knockbackVy = 0;
+        }
+    }
+
     private kill(actor: Actor): void {
         actor.alive = false;
         actor.currentHealth = 0;
         actor.aura = 0;
         actor.vx = 0;
         actor.vy = 0;
+        actor.knockbackVx = 0;
+        actor.knockbackVy = 0;
         actor.inputDx = 0;
         actor.inputDy = 0;
         actor.cancelAttack();
@@ -463,6 +514,8 @@ export class World {
         actor.alive = true;
         actor.vx = 0;
         actor.vy = 0;
+        actor.knockbackVx = 0;
+        actor.knockbackVy = 0;
         actor.inputDx = 0;
         actor.inputDy = 0;
         actor.cancelAttack();

@@ -62,6 +62,15 @@ export class Actor {
 
     invulnUntil = 0;
 
+    /**
+     * Empurrão em curso, em px/s. Somado à velocidade na hora de integrar (e
+     * não em `stepPlayer`/`stepBot`), para continuar valendo mesmo enquanto o
+     * alvo está atacando ou congelado — quem levou o golpe é empurrado de
+     * qualquer jeito.
+     */
+    knockbackVx = 0;
+    knockbackVy = 0;
+
     // --- entrada (humanos) ---
     inputDx = 0;
     inputDy = 0;
