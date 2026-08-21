@@ -9,9 +9,9 @@ import { RANKS, TEAM_INDEX, TEAM_SIZE, TICK_MS, RECONNECTION_SECONDS, Team } fro
  * chamadas ao `World` e copia o resultado para o schema.
  *
  * Protocolo cliente -> servidor (nomes curtos porque vão a 20 Hz):
- *   "i"  { dx, dy }   vetor de movimento normalizado
- *   "a"  1 | 0        1 = apertou o botão de ataque, 0 = soltou
- *   "r"  -            pediu para renascer (botão RENASCER)
+ *   "i"  { dx, dy, s } vetor de movimento normalizado + sequência do pacote
+ *   "a"  1 | 0         1 = apertou o botão de ataque, 0 = soltou
+ *   "r"  -             pediu para renascer (botão RENASCER)
  *
  * Servidor -> cliente:
  *   state             posições, vida, rank, aura, estado de golpe (schema)
@@ -37,11 +37,11 @@ export class ArenaRoom extends Room {
     private world = new World();
 
     messages = {
-        /** Vetor de movimento. O World normaliza e limita. */
-        i: (client: Client, message: { dx: number; dy: number }) => {
+        /** Vetor de movimento. O World normaliza, limita e ordena por `s`. */
+        i: (client: Client, message: { dx: number; dy: number; s: number }) => {
             const actor = this.actorOf(client);
             if (!actor || !message) return;
-            this.world.setInput(actor, Number(message.dx), Number(message.dy));
+            this.world.setInput(actor, Number(message.dx), Number(message.dy), Number(message.s));
         },
 
         /** 1 = começou a carregar, 0 = soltou. Quem cronometra é o servidor. */
@@ -156,6 +156,11 @@ export class ArenaRoom extends Room {
         s.atkSide = actor.atkSide;
         s.charging = actor.charging;
         s.chargeRatio = Math.round(actor.chargeRatio * 100);
+
+        // Depois de x/y: este patch representa o mundo com as entradas até
+        // `inputSeq` já aplicadas. É esse par (posição, ack) que o cliente usa
+        // como base da reconciliação.
+        s.ack = actor.inputSeq;
     }
 
     private actorOf(client: Client): Actor | undefined {

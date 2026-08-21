@@ -54,7 +54,7 @@ describe("ArenaRoom", () => {
         const actor = room.state.actors.get(client.sessionId)!;
 
         const startX = actor.x;
-        client.send("i", { dx: 1, dy: 0 });
+        client.send("i", { dx: 1, dy: 0, s: 1 });
         await waitTicks(4);
 
         assert.ok(
@@ -74,8 +74,8 @@ describe("ArenaRoom", () => {
         const honestStart = honestActor.x;
         const cheaterStart = cheaterActor.x;
 
-        honest.send("i", { dx: 1, dy: 0 });
-        cheater.send("i", { dx: 999, dy: 0 });
+        honest.send("i", { dx: 1, dy: 0, s: 1 });
+        cheater.send("i", { dx: 999, dy: 0, s: 1 });
         await waitTicks(6);
 
         const honestDelta = honestActor.x - honestStart;
@@ -85,6 +85,48 @@ describe("ArenaRoom", () => {
         assert.ok(
             cheaterDelta <= honestDelta + 1,
             `entrada inflada andou ${cheaterDelta} contra ${honestDelta} do honesto`,
+        );
+    });
+
+    it("devolve em ack a sequência da última entrada processada", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", {});
+        const client = await colyseus.connectTo(room);
+        const actor = room.state.actors.get(client.sessionId)!;
+
+        assert.strictEqual(actor.ack, 0, "sem entrada nenhuma, ack começa em zero");
+
+        client.send("i", { dx: 1, dy: 0, s: 7 });
+        await waitTicks(2);
+
+        assert.strictEqual(actor.ack, 7, "ack deve espelhar a sequência recebida");
+
+        // É esse par (posição, ack) que o cliente usa para reconciliar: o ack
+        // tem de valer para a posição publicada no MESMO patch.
+        const xNoAck7 = actor.x;
+        client.send("i", { dx: 0, dy: 0, s: 8 });
+        await waitTicks(3);
+
+        assert.strictEqual(actor.ack, 8);
+        assert.ok(actor.x >= xNoAck7, "parar não pode andar para trás");
+    });
+
+    it("ignora entrada com sequência velha (reordenação ou cliente adulterado)", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", {});
+        const client = await colyseus.connectTo(room);
+        const actor = room.state.actors.get(client.sessionId)!;
+
+        client.send("i", { dx: 0, dy: 0, s: 10 });
+        await waitTicks(2);
+        const parado = actor.x;
+
+        // Chega atrasado um pacote antigo mandando andar: tem de ser descartado.
+        client.send("i", { dx: 1, dy: 0, s: 4 });
+        await waitTicks(4);
+
+        assert.strictEqual(actor.ack, 10, "ack não pode retroceder");
+        assert.strictEqual(
+            Math.round(actor.x), Math.round(parado),
+            `entrada fora de ordem moveu o personagem de ${parado} para ${actor.x}`,
         );
     });
 

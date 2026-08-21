@@ -39,6 +39,17 @@ export class ActorState extends Schema {
     @type("boolean") charging: boolean = false;
     /** Progresso da carga em 0..100 (float compactado para 1 byte). */
     @type("uint8") chargeRatio: number = 0;
+
+    /**
+     * Sequência do último pacote de entrada que o servidor já aplicou a este
+     * ator (0 para bots, que não recebem entrada).
+     *
+     * É o que permite ao dono deste ator prever sem ficar para trás: ele volta
+     * a previsão para (`x`, `y`) e reaplica os deslocamentos dos pacotes com
+     * sequência maior que `ack` — exatamente os que ainda estavam viajando
+     * quando este patch foi gerado.
+     */
+    @type("uint32") ack: number = 0;
 }
 
 export class ArenaState extends Schema {

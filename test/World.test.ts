@@ -185,7 +185,7 @@ describe("World (simulação)", () => {
         actor.x = 1000;
         actor.y = 900;
 
-        world.setInput(actor, 1, 0);
+        world.setInput(actor, 1, 0, 1);
         advance(world, 500);
         const andouCedo = actor.x - 1000;
         assert.ok(andouCedo > 0, "deveria estar andando enquanto a entrada é recente");
@@ -207,7 +207,7 @@ describe("World (simulação)", () => {
         actor.x = 300;
         actor.y = 300;
 
-        world.setInput(actor, -1, -1);
+        world.setInput(actor, -1, -1, 1);
         advance(world, 5000);
 
         const half = RANKS.PAWN.size.width / 2;

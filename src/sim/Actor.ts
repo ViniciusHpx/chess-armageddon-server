@@ -58,6 +58,15 @@ export class Actor {
     // --- entrada (humanos) ---
     inputDx = 0;
     inputDy = 0;
+    /**
+     * Sequência do último pacote de entrada processado.
+     *
+     * Vai de volta ao cliente no schema (`ActorState.ack`) para ele saber até
+     * onde o servidor já andou e reaplicar sozinho o que mandou depois disso.
+     * Sem isto o cliente reconciliaria contra uma posição de um RTT atrás e o
+     * boneco viveria sendo puxado para trás.
+     */
+    inputSeq = 0;
     /** Instante do último pacote de entrada. Ver INPUT_TIMEOUT_MS. */
     lastInputAt = 0;
     /** Cliente desconectado esperando reconexão: congela o personagem. */

@@ -107,8 +107,18 @@ export class World {
     // ENTRADA DOS CLIENTES
     // -----------------------------------------------------------------------
 
-    /** Vetor de movimento normalizado. Nunca confie no módulo enviado. */
-    setInput(actor: Actor, dx: number, dy: number): void {
+    /**
+     * Vetor de movimento normalizado. Nunca confie no módulo enviado.
+     *
+     * `seq` é o contador do cliente; volta em `ActorState.ack` para ele
+     * reconciliar a previsão. Pacote com seq menor ou igual ao já processado é
+     * reordenação (ou cliente adulterado) e o vetor é ignorado — mas o
+     * `lastInputAt` ainda conta, senão INPUT_TIMEOUT_MS mataria o movimento.
+     */
+    setInput(actor: Actor, dx: number, dy: number, seq: number): void {
+        actor.lastInputAt = this.now;
+
+        if (!Number.isFinite(seq) || seq <= actor.inputSeq) return;
         if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
 
         const len = Math.sqrt(dx * dx + dy * dy);
@@ -118,7 +128,7 @@ export class World {
         }
         actor.inputDx = clamp(dx, -1, 1);
         actor.inputDy = clamp(dy, -1, 1);
-        actor.lastInputAt = this.now;
+        actor.inputSeq = seq;
     }
 
     startCharge(actor: Actor): void {
