@@ -142,7 +142,7 @@ describe("World (simulação)", () => {
         assert.strictEqual(attacker.aura, 10, "abater um peão dá 10 de aura");
     });
 
-    it("humano morto só renasce depois da carência, e como peão", () => {
+    it("humano morto só renasce depois da carência, mantendo a peça", () => {
         const world = new World();
         const attacker = world.addPlayer("a", "ally", "A");
         const target = world.addPlayer("b", "enemy", "B");
@@ -774,14 +774,54 @@ describe("World (simulação)", () => {
         assert.strictEqual(cheio.max, true, "no teto a barra fica cheia e não calcula próximo nível");
     });
 
-    it("morrer zera a XP junto com o rank", () => {
+    it("o respawn do servidor devolve o personagem com o mesmo rank", () => {
         const world = new World();
         const actor = world.addPlayer("a", "ally", "A");
-        actor.addExperience(XP_PER_LEVEL * 3);
-        assert.strictEqual(actor.rankKey, "BISHOP");
+        const algoz = world.addPlayer("b", "enemy", "B");
 
-        actor.resetToPawn();
-        assert.strictEqual(actor.xp, 0, "sem isso o rank voltaria sozinho no quadro seguinte");
-        assert.strictEqual(actor.rankKey, "PAWN");
+        actor.addExperience(XP_PER_LEVEL * 2 + 40);   // cavalo, 40 de progresso
+        assert.strictEqual(actor.rankKey, "HORSE");
+
+        // Morre de verdade, pelo caminho normal do combate.
+        for (let i = 0; i < 8 && actor.alive; i++) {
+            placeSideBySide(algoz, actor);
+            algoz.attackReadyAt = 0;
+            swing(world, algoz);
+            advance(world, 300);
+            advance(world, HIT_INVULN_MS + TICK_MS);
+        }
+        assert.strictEqual(actor.alive, false, "o alvo deveria ter morrido");
+
+        advance(world, 1200);
+        world.requestRespawn(actor);
+
+        assert.strictEqual(actor.alive, true);
+        assert.strictEqual(actor.rankKey, "HORSE", "renasce com a mesma peça");
+        assert.strictEqual(actor.xp, XP_PER_LEVEL * 2, "e com a barra do nível zerada");
+        assert.strictEqual(actor.currentHealth, RANKS.HORSE.health);
+    });
+
+    it("morrer mantém o rank e devolve a XP ao piso do nível", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+
+        // Cavalo (nível 3) com 20 de progresso no nível.
+        actor.addExperience(XP_PER_LEVEL * 2 + 20);
+        assert.strictEqual(actor.rankKey, "HORSE");
+        assert.strictEqual(xpProgress(actor.xp).into, 20);
+
+        actor.resetProgressOnDeath();
+
+        assert.strictEqual(actor.rankKey, "HORSE", "a peça continua a mesma");
+        assert.strictEqual(actor.xp, XP_PER_LEVEL * 2, "a XP cai para o piso do nível");
+        assert.strictEqual(xpProgress(actor.xp).into, 0, "a barra volta a zero");
+        assert.strictEqual(actor.currentHealth, RANKS.HORSE.health, "renasce com vida cheia");
+
+        // Peão perde só o progresso: 90 -> 0.
+        const peao = world.addPlayer("b", "ally", "B");
+        peao.addExperience(90);
+        peao.resetProgressOnDeath();
+        assert.strictEqual(peao.xp, 0);
+        assert.strictEqual(peao.rankKey, "PAWN");
     });
 });

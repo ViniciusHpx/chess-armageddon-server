@@ -719,7 +719,8 @@ export class World {
     }
 
     private respawn(actor: Actor): void {
-        actor.resetToPawn();
+        // Mantém o rank: morrer custa o progresso do nível, não a peça.
+        actor.resetProgressOnDeath();
         actor.aura = 0;
         actor.alive = true;
         actor.vx = 0;

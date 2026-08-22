@@ -10,7 +10,7 @@
 import {
     RANKS, RankKey, RankConfig, AURA_KILL_VALUES, Team,
     WORLD_WIDTH, WORLD_HEIGHT, HIT_INVULN_MS,
-    levelFromXp, rankKeyForLevel,
+    levelFromXp, rankKeyForLevel, XP_PER_LEVEL,
 } from "./constants.js";
 import { clamp } from "./mathx.js";
 
@@ -216,14 +216,19 @@ export class Actor {
     }
 
     /**
-     * Volta ao peão na morte. Zera a XP junto: sem isso o rank voltaria no
-     * quadro seguinte pela XP acumulada e morrer não custaria nada — a mesma
-     * punição que a aura já tinha.
+     * Perda ao morrer: **o rank fica, a barra volta a zero**.
+     *
+     * A XP não vai para 0 absoluto, e sim para o piso do nível atual — que é
+     * exatamente a XP mínima para ser o rank que já se é. Zerar de verdade
+     * faria o rank cair no primeiro `addExperience`; deixar a XP intacta
+     * tornaria a morte grátis. O piso é o meio-termo: quem morre perde só o
+     * progresso rumo à próxima peça.
+     *
+     * Exemplo: cavalo (nível 3) com 220 XP morre e renasce cavalo com 200.
      */
-    resetToPawn(): void {
-        this.xp = 0;
-        this.setRank("PAWN");
-        this.maxHealth = RANKS.PAWN.health;
+    resetProgressOnDeath(): void {
+        this.xp = (this.level - 1) * XP_PER_LEVEL;
+        this.maxHealth = this.rank.health;
         this.currentHealth = this.maxHealth;
     }
 
