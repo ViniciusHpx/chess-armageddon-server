@@ -40,6 +40,24 @@ export class ActorState extends Schema {
     /** Lado (em Y) da perna do L do cavalo: -1 ou 1. */
     @type("int8") atkSide: number = 1;
 
+    /**
+     * Dash em curso. Só serve para o cliente disparar o efeito visual dos
+     * OUTROS personagens; o dono do ator dispara o dele na hora do toque.
+     */
+    @type("boolean") dashing: boolean = false;
+
+    /**
+     * Cooldown do dash que ainda falta, em 0..100 (0 = pronto).
+     *
+     * É a única fonte do indicador circular do botão: o cliente não guarda
+     * cooldown próprio, então não há como um cliente adulterado se dar dash
+     * infinito — o servidor recusaria e o botão continuaria em recarga.
+     *
+     * Fica em 0 nos bots, que não têm botão: sem isso este byte mudaria a cada
+     * patch para cada bot em recarga, só para ninguém ler.
+     */
+    @type("uint8") dashCd: number = 0;
+
     @type("boolean") charging: boolean = false;
     /** Progresso da carga em 0..100 (float compactado para 1 byte). */
     @type("uint8") chargeRatio: number = 0;

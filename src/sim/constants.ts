@@ -170,6 +170,69 @@ export const BOT_ATTACK_RATE_PER_SECOND = 3;
  */
 export const BOT_ATTACK_RANGE_SLACK = 20;
 
+// ---------------------------------------------------------------------------
+// DASH / ESQUIVA
+// ---------------------------------------------------------------------------
+
+/**
+ * O dash é um OVERRIDE de velocidade por um tempo fixo, não um teleporte nem
+ * um empurrão: enquanto dura, `vx`/`vy` vêm da direção do dash e o resto do
+ * tick (colisão entre personagens, `clampToWorld`) continua valendo. Assim
+ * ninguém atravessa outro personagem nem sai do mapa, e a distância percorrida
+ * não depende de FPS nem de tick rate.
+ *
+ * A velocidade sai de distância/duração — mexa nesses dois, não nela.
+ */
+export const DASH_DISTANCE = 220;
+export const DASH_DURATION_MS = 220;
+export const DASH_SPEED = DASH_DISTANCE / (DASH_DURATION_MS / 1000);
+
+/** Espera até poder dar outro dash, contada do INÍCIO do dash. */
+/**
+ * Teto de tempo do dash. Quem termina o dash é a distância percorrida
+ * (`Actor.dashRemaining`); este prazo só solta o personagem se ele estiver
+ * travado contra outro ou contra a borda e o resto nunca for consumido.
+ *
+ * Precisa de folga sobre a duração nominal: o servidor integra em ticks de
+ * 50 ms e, com o teto colado em DASH_DURATION_MS, o último pedaço da distância
+ * ficava para trás — e aí o cliente, que integra em quadros de ~16 ms, entregava
+ * alguns pixels a mais que o servidor a cada dash.
+ */
+export const DASH_TIMEOUT_MS = DASH_DURATION_MS * 2;
+
+export const DASH_COOLDOWN_MS = 1500;
+
+/**
+ * Invulnerabilidade concedida no início do dash.
+ *
+ * Menor que a duração de propósito: a esquiva salva de um golpe que já estava
+ * vindo, mas o final do dash fica exposto — atravessar um inimigo que ataca no
+ * fim do movimento ainda dói.
+ */
+export const DASH_INVULN_MS = 160;
+
+/** Cooldown do dash para bots: bem maior, senão eles esquivam demais. */
+export const BOT_DASH_COOLDOWN_MS = 3000;
+
+/**
+ * Chance de o bot reagir a um golpe que ele percebeu.
+ *
+ * Sorteada UMA vez por golpe inimigo (a chave é o `attackHitAt` do atacante),
+ * não a cada tick — sorteando por tick qualquer chance viraria ~100% ao longo
+ * dos 200 ms de windup e o bot esquivaria de tudo.
+ */
+export const BOT_DODGE_CHANCE = 0.35;
+
+/**
+ * Tempo de reação: o bot só considera esquivar depois que o golpe já começou
+ * há esse tanto. Some com o windup de 200 ms para dar uma janela curta —
+ * reagir no primeiro tick pareceria leitura de pensamento.
+ */
+export const BOT_DODGE_REACTION_MS = 90;
+
+/** Folga sobre o alcance do atacante para o bot considerar o golpe perigoso. */
+export const BOT_DODGE_RANGE_SLACK = 1.25;
+
 /** Margem das bordas em que o bot inverte o rumo. */
 export const BOT_EDGE_MARGIN = 100;
 

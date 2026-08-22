@@ -26,6 +26,8 @@ import {
     BOT_SPEED_FACTOR, DAMAGE_CHARGED, DAMAGE_NORMAL, HUMAN_RESPAWN_DELAY_MS,
     INPUT_TIMEOUT_MS, KNOCKBACK_DECAY_MS, KNOCKBACK_MIN_SPEED,
     BOT_CHARGE_HOLD_MS, RESPAWN_INVULN_MS, Team, WORLD_HEIGHT, WORLD_WIDTH,
+    BOT_DASH_COOLDOWN_MS, BOT_DODGE_CHANCE, BOT_DODGE_RANGE_SLACK, BOT_DODGE_REACTION_MS,
+    DASH_COOLDOWN_MS, DASH_DISTANCE, DASH_INVULN_MS, DASH_SPEED, DASH_TIMEOUT_MS,
     attackHalfBand, attackReach, knockbackSpeed,
 } from "./constants.js";
 
@@ -155,6 +157,61 @@ export class World {
         this.beginAttack(actor, charged);
     }
 
+    /**
+     * Pedido de dash. O cliente manda só o pedido — sem direção, sem duração e
+     * sem tempo. Aqui é que se decide se pode e para onde.
+     *
+     * A direção sai da ÚLTIMA entrada recebida deste ator (ou do lado para onde
+     * ele olha, se estiver parado). Deixar o cliente informar o vetor abriria a
+     * porta para dash em direção arbitrária, e o cooldown vive aqui pelo mesmo
+     * motivo: mensagem repetida em rajada simplesmente cai neste `return`.
+     *
+     * @returns true se o dash começou.
+     */
+    requestDash(actor: Actor): boolean {
+        if (!actor.alive || actor.frozen) return false;
+        if (this.now < actor.dashReadyAt) return false;
+        // Durante o golpe não: o dash viraria um jeito de arrastar a hitbox do
+        // ataque para cima do alvo depois do windup já ter começado.
+        if (actor.attacking) return false;
+
+        let dx = actor.inputDx;
+        let dy = actor.inputDy;
+        if (dx === 0 && dy === 0) {
+            dx = actor.flipX ? -1 : 1;
+            dy = 0;
+        }
+
+        const length = Math.hypot(dx, dy) || 1;
+        this.startDash(actor, dx / length, dy / length);
+        return true;
+    }
+
+    /** Início do dash em si. Usado pelo pedido do jogador e pela IA. */
+    private startDash(actor: Actor, dirX: number, dirY: number): void {
+        actor.dashDirX = dirX;
+        actor.dashDirY = dirY;
+        actor.dashUntil = this.now + DASH_TIMEOUT_MS;
+        actor.dashRemaining = DASH_DISTANCE;
+        // O cooldown conta do INÍCIO do dash, não do fim: assim mexer na
+        // duração não muda a cadência da habilidade.
+        actor.dashReadyAt = this.now +
+            (actor.isBot ? BOT_DASH_COOLDOWN_MS : DASH_COOLDOWN_MS);
+
+        // Nunca encurta uma invulnerabilidade maior já em curso (dano recente,
+        // respawn) — só estende, se o dash der mais.
+        actor.invulnUntil = Math.max(actor.invulnUntil, this.now + DASH_INVULN_MS);
+
+        // Carga em curso é cancelada: sair rolando com o golpe engatilhado
+        // deixaria o alcance carregado de graça depois da esquiva.
+        if (actor.charging) {
+            actor.charging = false;
+            actor.chargeRatio = 0;
+        }
+
+        if (dirX !== 0) actor.flipX = dirX < 0;
+    }
+
     /** Renascer é pedido pelo cliente (botão RENASCER), com carência mínima. */
     requestRespawn(actor: Actor): void {
         if (actor.alive || this.now < actor.respawnAt) return;
@@ -172,7 +229,7 @@ export class World {
         for (const actor of this.actors.values()) {
             if (!actor.alive) continue;
             if (actor.isBot) this.stepBot(actor, deltaMs);
-            else this.stepPlayer(actor);
+            else this.stepPlayer(actor, deltaMs);
         }
 
         for (const actor of this.actors.values()) {
@@ -206,7 +263,7 @@ export class World {
         }
     }
 
-    private stepPlayer(actor: Actor): void {
+    private stepPlayer(actor: Actor, deltaMs: number): void {
         if (actor.charging) {
             const elapsed = this.now - actor.chargeStartedAt;
             actor.chargeRatio = clamp(elapsed / actor.rank.chargeTime, 0, 1);
@@ -226,6 +283,17 @@ export class World {
             actor.inputDy = 0;
         }
 
+        // Dash manda na velocidade enquanto dura: a entrada do jogador não
+        // desvia nem freia o impulso. Como só troca `vx`/`vy`, o resto do tick
+        // (colisão entre personagens, clamp do mapa) continua valendo — nada de
+        // teleporte nem de atravessar quem estiver no caminho.
+        if (actor.isDashing(this.now)) {
+            const speed = actor.consumeDashSpeed(deltaMs / 1000, DASH_SPEED);
+            actor.vx = actor.dashDirX * speed;
+            actor.vy = actor.dashDirY * speed;
+            return;
+        }
+
         // Durante o golpe anda devagar em vez de parar. Ver ATTACK_MOVE_FACTOR.
         const speed = actor.rank.speed * (actor.attacking ? ATTACK_MOVE_FACTOR : 1);
         actor.vx = actor.inputDx * speed;
@@ -235,6 +303,13 @@ export class World {
     }
 
     private stepBot(actor: Actor, deltaMs: number): void {
+        if (actor.isDashing(this.now)) {
+            const speed = actor.consumeDashSpeed(deltaMs / 1000, DASH_SPEED);
+            actor.vx = actor.dashDirX * speed;
+            actor.vy = actor.dashDirY * speed;
+            return;
+        }
+
         const nearest = this.findNearestOpponent(actor);
         let moveAngle: number;
 
@@ -269,6 +344,8 @@ export class World {
         // carga ou novo ataque antes de o atual terminar.
         if (actor.attacking) return;
 
+        if (this.tryBotDodge(actor, nearest)) return;
+
         if (actor.charging) {
             this.stepBotCharge(actor, nearest);
             return;
@@ -296,6 +373,53 @@ export class World {
 
         this.beginAttack(actor, false);
         actor.attackCooldown = BOT_ATTACK_COOLDOWN_MS;
+    }
+
+    /**
+     * O bot esquiva de um golpe que está vindo?
+     *
+     * Quatro filtros, nesta ordem porque ficam cada vez mais caros: cooldown,
+     * existe golpe inimigo em curso, o atacante está perto o bastante para
+     * acertar, e o tempo de reação já passou. Só então rola o dado — UMA vez
+     * por golpe, com a chave `attackHitAt` do atacante guardada em
+     * `dodgeRolledFor`. Sorteando a cada tick, os 200 ms de windup dariam ~4
+     * sorteios e qualquer chance viraria quase certeza: o bot esquivaria de
+     * tudo e pareceria ler pensamento.
+     *
+     * A esquiva sai na direção oposta à do atacante — o mesmo vetor que o
+     * empurrão do golpe usaria.
+     */
+    private tryBotDodge(actor: Actor, threat: Actor | undefined): boolean {
+        if (this.now < actor.dashReadyAt) return false;
+        if (threat === undefined || !threat.attacking) return false;
+
+        // Já sorteou por este golpe: não tenta de novo nos ticks seguintes.
+        if (actor.dodgeRolledFor === threat.attackHitAt) return false;
+
+        const elapsed = ATTACK_WINDUP_MS - (threat.attackHitAt - this.now);
+        if (elapsed < BOT_DODGE_REACTION_MS) return false;
+
+        const from = threat.ellipseCenter();
+        const to = actor.ellipseCenter();
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+
+        const mult = threat.charged ? 2 : 1;
+        const perigo = (threat.collisionRx + attackReach(threat.rank) * mult + actor.collisionRx)
+            * BOT_DODGE_RANGE_SLACK;
+        if (dx * dx + dy * dy > perigo * perigo) return false;
+
+        // Percebeu o golpe: gasta o sorteio deste ataque, acertando ou não.
+        actor.dodgeRolledFor = threat.attackHitAt;
+        if (Math.random() >= BOT_DODGE_CHANCE) return false;
+
+        const length = Math.hypot(dx, dy);
+        if (length < 1e-3) {
+            this.startDash(actor, threat.flipX ? -1 : 1, 0);
+        } else {
+            this.startDash(actor, dx / length, dy / length);
+        }
+        return true;
     }
 
     /**
@@ -568,6 +692,7 @@ export class World {
         actor.inputDx = 0;
         actor.inputDy = 0;
         actor.cancelAttack();
+        actor.cancelDash();
         actor.respawnAt = this.now + (actor.isBot ? BOT_RESPAWN_DELAY_MS : HUMAN_RESPAWN_DELAY_MS);
     }
 
@@ -582,6 +707,7 @@ export class World {
         actor.inputDx = 0;
         actor.inputDy = 0;
         actor.cancelAttack();
+        actor.cancelDash();
         this.placeAtSpawn(actor);
         actor.invulnUntil = this.now + RESPAWN_INVULN_MS;
         if (actor.isBot) actor.attackCooldown = 0;

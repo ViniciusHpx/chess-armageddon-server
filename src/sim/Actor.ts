@@ -62,6 +62,38 @@ export class Actor {
 
     invulnUntil = 0;
 
+    // --- dash / esquiva ---
+    /**
+     * Teto de tempo do dash em curso (`World.now`); 0 = não está em dash.
+     *
+     * Quem determina a distância é `dashRemaining`; este prazo só existe para
+     * o dash não ficar preso quando o personagem trava contra outro ou contra
+     * a borda e o resto nunca é consumido.
+     */
+    dashUntil = 0;
+
+    /**
+     * Distância que ainda falta percorrer no dash, em px.
+     *
+     * Contar distância em vez de só cronometrar é o que faz o dash render
+     * exatamente DASH_DISTANCE nos dois lados: o servidor integra em ticks de
+     * 50 ms e o cliente em quadros de ~16 ms, e a diferença de alinhamento
+     * dava ~20 px de resto sistemático a cada dash para a reconciliação
+     * desfazer.
+     */
+    dashRemaining = 0;
+    /** Instante a partir do qual pode dar outro dash. */
+    dashReadyAt = 0;
+    /** Direção do dash, unitária. Congelada no início: virar no meio do dash
+     *  quebraria a previsão do cliente, que só sabe a direção do começo. */
+    dashDirX = 0;
+    dashDirY = 0;
+    /**
+     * `attackHitAt` do golpe inimigo para o qual este bot já sorteou reação.
+     * Guardar a chave é o que garante UM sorteio por golpe. Ver BOT_DODGE_CHANCE.
+     */
+    dodgeRolledFor = 0;
+
     /**
      * Empurrão em curso, em px/s. Somado à velocidade na hora de integrar (e
      * não em `stepPlayer`/`stepBot`), para continuar valendo mesmo enquanto o
@@ -157,6 +189,29 @@ export class Actor {
         return now < this.invulnUntil;
     }
 
+    isDashing(now: number): boolean {
+        return now < this.dashUntil && this.dashRemaining > 0;
+    }
+
+    /**
+     * Velocidade do dash neste passo, já limitada pelo que falta percorrer, e
+     * desconta essa fatia. O último passo sai mais devagar em vez de passar do
+     * alvo.
+     */
+    consumeDashSpeed(dtSeconds: number, fullSpeed: number): number {
+        if (dtSeconds <= 0) return 0;
+        const speed = Math.min(fullSpeed, this.dashRemaining / dtSeconds);
+        this.dashRemaining -= speed * dtSeconds;
+        return speed;
+    }
+
+    /** Fração do cooldown do dash que ainda falta, 0..1 (0 = pronto). */
+    dashCooldownRatio(now: number, total: number): number {
+        const falta = this.dashReadyAt - now;
+        if (falta <= 0) return 0;
+        return clamp(falta / total, 0, 1);
+    }
+
     /** @returns true se o golpe matou. */
     takeDamage(amount: number, now: number): boolean {
         if (!this.alive || this.isInvulnerable(now)) return false;
@@ -173,6 +228,14 @@ export class Actor {
 
     addAuraFromKill(victim: Actor): void {
         this.aura += AURA_KILL_VALUES[victim.rank.key] ?? 10;
+    }
+
+    /** Corta um dash em curso (morte, respawn). Não mexe no cooldown. */
+    cancelDash(): void {
+        this.dashUntil = 0;
+        this.dashRemaining = 0;
+        this.dashDirX = 0;
+        this.dashDirY = 0;
     }
 
     /** Cancela ataque e carga em curso. */

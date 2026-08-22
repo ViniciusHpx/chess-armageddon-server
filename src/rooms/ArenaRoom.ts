@@ -2,7 +2,9 @@ import { Room, Client, CloseCode } from "colyseus";
 import { ArenaState, ActorState } from "./schema/ArenaState.js";
 import { Actor } from "../sim/Actor.js";
 import { World } from "../sim/World.js";
-import { RANKS, TEAM_INDEX, TEAM_SIZE, TICK_MS, RECONNECTION_SECONDS, Team } from "../sim/constants.js";
+import {
+    RANKS, TEAM_INDEX, TEAM_SIZE, TICK_MS, RECONNECTION_SECONDS, DASH_COOLDOWN_MS, Team,
+} from "../sim/constants.js";
 
 /**
  * Sala da arena. Não contém regra de jogo: só traduz mensagens do cliente em
@@ -11,6 +13,7 @@ import { RANKS, TEAM_INDEX, TEAM_SIZE, TICK_MS, RECONNECTION_SECONDS, Team } fro
  * Protocolo cliente -> servidor (nomes curtos porque vão a 20 Hz):
  *   "i"  { dx, dy, s } vetor de movimento normalizado + sequência do pacote
  *   "a"  1 | 0         1 = apertou o botão de ataque, 0 = soltou
+ *   "d"  -             pediu um dash (direção e cooldown quem decide é o World)
  *   "r"  -             pediu para renascer (botão RENASCER)
  *
  * Servidor -> cliente:
@@ -50,6 +53,17 @@ export class ArenaRoom extends Room {
             if (!actor) return;
             if (message) this.world.startCharge(actor);
             else this.world.releaseAttack(actor);
+        },
+
+        /**
+         * Dash. Mensagem sem corpo de propósito: direção, distância, duração e
+         * cooldown saem todos do `World`, então não há nada que o cliente possa
+         * inflar. Spam cai no cooldown do lado de cá (e, em rajada, no
+         * `maxMessagesPerSecond` da própria sala).
+         */
+        d: (client: Client) => {
+            const actor = this.actorOf(client);
+            if (actor) this.world.requestDash(actor);
         },
 
         r: (client: Client) => {
@@ -157,6 +171,11 @@ export class ArenaRoom extends Room {
         s.attacking = actor.attacking;
         s.charged = actor.charged;
         s.atkSide = actor.atkSide;
+        s.dashing = actor.isDashing(this.world.now);
+        // Bots não têm botão para desenhar: economiza um byte por patch por bot.
+        s.dashCd = actor.isBot
+            ? 0
+            : Math.round(actor.dashCooldownRatio(this.world.now, DASH_COOLDOWN_MS) * 100);
         s.charging = actor.charging;
         s.chargeRatio = Math.round(actor.chargeRatio * 100);
 
