@@ -111,6 +111,20 @@ export const TICK_MS = 50;
 /** Atraso entre iniciar o golpe e aplicar o dano (era `delayedCall(200)`). */
 export const ATTACK_WINDUP_MS = 200;
 
+/**
+ * Fração da velocidade mantida durante o golpe.
+ *
+ * Era 0 (parado seco). Somado ao RTT — o cliente só volta a andar quando o
+ * `attacking` cai no estado — a parada aparecia bem maior que os 200 ms do
+ * windup e cortava o movimento no meio. Andar devagar preserva o custo de
+ * atacar em movimento sem travar o jogador.
+ *
+ * Vale para humanos e bots, e a cópia do cliente
+ * (`chess-armageddon/src/constants/Hierarchy.js`) tem de bater: é ela que a
+ * previsão local usa.
+ */
+export const ATTACK_MOVE_FACTOR = 0.6;
+
 export const DAMAGE_NORMAL = 25;
 export const DAMAGE_CHARGED = 50;
 

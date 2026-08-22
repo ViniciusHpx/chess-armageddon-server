@@ -21,7 +21,7 @@ import {
 } from "./geometry.js";
 import { angleBetween, clamp, distance, randInt } from "./mathx.js";
 import {
-    ATTACK_WINDUP_MS, BOT_ATTACK_COOLDOWN_MS, BOT_ATTACK_RANGE_SLACK,
+    ATTACK_MOVE_FACTOR, ATTACK_WINDUP_MS, BOT_ATTACK_COOLDOWN_MS, BOT_ATTACK_RANGE_SLACK,
     BOT_ATTACK_RATE_PER_SECOND, BOT_EDGE_MARGIN, BOT_RESPAWN_DELAY_MS,
     BOT_SPEED_FACTOR, DAMAGE_CHARGED, DAMAGE_NORMAL, HUMAN_RESPAWN_DELAY_MS,
     INPUT_TIMEOUT_MS, KNOCKBACK_DECAY_MS, KNOCKBACK_MIN_SPEED,
@@ -212,9 +212,7 @@ export class World {
             actor.chargeRatio = clamp(elapsed / actor.rank.chargeTime, 0, 1);
         }
 
-        // Durante o golpe o personagem fica parado. No cliente offline a
-        // velocidade anterior persistia e o boneco deslizava por 200 ms.
-        if (actor.attacking || actor.frozen) {
+        if (actor.frozen) {
             actor.vx = 0;
             actor.vy = 0;
             return;
@@ -228,7 +226,8 @@ export class World {
             actor.inputDy = 0;
         }
 
-        const speed = actor.rank.speed;
+        // Durante o golpe anda devagar em vez de parar. Ver ATTACK_MOVE_FACTOR.
+        const speed = actor.rank.speed * (actor.attacking ? ATTACK_MOVE_FACTOR : 1);
         actor.vx = actor.inputDx * speed;
         actor.vy = actor.inputDy * speed;
 
@@ -236,12 +235,6 @@ export class World {
     }
 
     private stepBot(actor: Actor, deltaMs: number): void {
-        if (actor.attacking) {
-            actor.vx = 0;
-            actor.vy = 0;
-            return;
-        }
-
         const nearest = this.findNearestOpponent(actor);
         let moveAngle: number;
 
@@ -264,12 +257,17 @@ export class World {
         if (actor.y < m && Math.sin(moveAngle) < 0) moveAngle = Math.PI / 2;
         else if (actor.y > WORLD_HEIGHT - m && Math.sin(moveAngle) > 0) moveAngle = -Math.PI / 2;
 
-        const speed = actor.rank.speed * BOT_SPEED_FACTOR;
+        const speed = actor.rank.speed * BOT_SPEED_FACTOR *
+            (actor.attacking ? ATTACK_MOVE_FACTOR : 1);
         actor.vx = Math.cos(moveAngle) * speed;
         actor.vy = Math.sin(moveAngle) * speed;
 
         if (actor.vx < 0) actor.flipX = true;
         else if (actor.vx > 0) actor.flipX = false;
+
+        // Golpe em curso: só o movimento acima continua, nada de encadear
+        // carga ou novo ataque antes de o atual terminar.
+        if (actor.attacking) return;
 
         if (actor.charging) {
             this.stepBotCharge(actor, nearest);
@@ -410,8 +408,6 @@ export class World {
         actor.charged = charged;
         actor.attackHitAt = this.now + ATTACK_WINDUP_MS;
         actor.hitThisAttack.clear();
-        actor.vx = 0;
-        actor.vy = 0;
 
         // A perna do L do cavalo aponta para o inimigo mais próximo. Fica
         // congelada aqui: o cliente desenha esse mesmo lado durante todo o
