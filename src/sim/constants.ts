@@ -123,8 +123,13 @@ export const RESPAWN_INVULN_MS = 1000;
 export const HUMAN_RESPAWN_DELAY_MS = 1000;
 export const BOT_RESPAWN_DELAY_MS = 1000;
 
-/** Bots andam a 25% da velocidade do rank (mantido do original). */
-export const BOT_SPEED_FACTOR = 0.25;
+/**
+ * Bots andam na velocidade cheia do rank, igual ao jogador.
+ *
+ * Era 0.25 (herdado do original): o bot ficava lento demais para perseguir,
+ * qualquer humano simplesmente andava para fora do alcance dele.
+ */
+export const BOT_SPEED_FACTOR = 1;
 
 /**
  * Tempo mínimo entre dois golpes do mesmo bot.
