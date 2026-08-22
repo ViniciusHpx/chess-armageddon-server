@@ -169,7 +169,7 @@ export class ArenaRoom extends Room {
         s.alive = actor.alive;
         s.invuln = actor.isInvulnerable(this.world.now);
         s.attacking = actor.attacking;
-        s.charged = actor.charged;
+        s.atkPower = Math.round(actor.chargePower * 100);
         s.atkSide = actor.atkSide;
         s.dashing = actor.isDashing(this.world.now);
         // Bots não têm botão para desenhar: economiza um byte por patch por bot.

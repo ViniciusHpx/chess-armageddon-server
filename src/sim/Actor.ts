@@ -48,7 +48,17 @@ export class Actor {
     attacking = false;
     /** Instante em que o dano do golpe em curso será aplicado. */
     attackHitAt = 0;
-    charged = false;
+    /**
+     * Potência do golpe em curso, de 0 (toque no botão) a 1 (carga cheia).
+     *
+     * Substituiu o antigo booleano `charged`. Quem a calcula é o servidor, a
+     * partir do próprio relógio (`World.releaseAttack`) — o cliente só informa
+     * que apertou e que soltou, então não há valor de carga vindo da rede para
+     * alguém inflar.
+     */
+    chargePower = 0;
+    /** Instante a partir do qual pode atacar ou carregar de novo. */
+    attackReadyAt = 0;
     /** Para qual lado (em Y) sai a perna do L do cavalo: -1 ou 1. */
     atkSide = 1;
     /** Alvos já atingidos pelo golpe atual — evita dano duplo. */
@@ -242,7 +252,7 @@ export class Actor {
     cancelAttack(): void {
         this.attacking = false;
         this.attackHitAt = 0;
-        this.charged = false;
+        this.chargePower = 0;
         this.charging = false;
         this.chargeRatio = 0;
         this.hitThisAttack.clear();

@@ -21,7 +21,7 @@ import {
 } from "./geometry.js";
 import { angleBetween, clamp, distance, randInt } from "./mathx.js";
 import {
-    ATTACK_MOVE_FACTOR, ATTACK_WINDUP_MS, BOT_ATTACK_COOLDOWN_MS, BOT_ATTACK_RANGE_SLACK,
+    ATTACK_MOVE_FACTOR, BOT_ATTACK_COOLDOWN_MS, BOT_ATTACK_RANGE_SLACK,
     BOT_ATTACK_RATE_PER_SECOND, BOT_EDGE_MARGIN, BOT_RESPAWN_DELAY_MS,
     BOT_SPEED_FACTOR, DAMAGE_CHARGED, DAMAGE_NORMAL, HUMAN_RESPAWN_DELAY_MS,
     INPUT_TIMEOUT_MS, KNOCKBACK_DECAY_MS, KNOCKBACK_MIN_SPEED,
@@ -29,6 +29,7 @@ import {
     BOT_DASH_COOLDOWN_MS, BOT_DODGE_CHANCE, BOT_DODGE_RANGE_SLACK, BOT_DODGE_REACTION_MS,
     DASH_COOLDOWN_MS, DASH_DISTANCE, DASH_INVULN_MS, DASH_SPEED, DASH_TIMEOUT_MS,
     attackHalfBand, attackReach, knockbackSpeed,
+    attackRecoveryMs, attackWindupMs, chargeAreaMult, chargeDamage, chargePower,
 } from "./constants.js";
 
 /** Evento de combate emitido para o cliente reagir (som, shake, feedback). */
@@ -137,6 +138,10 @@ export class World {
 
     startCharge(actor: Actor): void {
         if (!actor.alive || actor.attacking || actor.charging) return;
+        // Recuperação do golpe anterior. É aqui que o spam morre: mesmo um
+        // cliente adulterado mandando "a" a 60 Hz não começa carga nenhuma
+        // enquanto este prazo não vence.
+        if (this.now < actor.attackReadyAt) return;
         actor.charging = true;
         actor.chargeStartedAt = this.now;
         actor.chargeRatio = 0;
@@ -149,12 +154,15 @@ export class World {
     releaseAttack(actor: Actor): void {
         if (!actor.alive || !actor.charging) return;
 
+        // A potência sai do relógio da sala contra o `chargeTime` do rank, e o
+        // clamp dentro de `chargePower` é o teto absoluto: segurar dez segundos
+        // dá exatamente o mesmo golpe que segurar o tempo do rank.
         const elapsed = this.now - actor.chargeStartedAt;
-        const charged = elapsed >= actor.rank.chargeTime;
+        const power = chargePower(elapsed, actor.rank.chargeTime);
 
         actor.charging = false;
         actor.chargeRatio = 0;
-        this.beginAttack(actor, charged);
+        this.beginAttack(actor, power);
     }
 
     /**
@@ -250,7 +258,7 @@ export class World {
             if (actor.attacking && this.now >= actor.attackHitAt) {
                 if (actor.alive) this.executeAttackHit(actor);
                 actor.attacking = false;
-                actor.charged = false;
+                actor.chargePower = 0;
                 actor.hitThisAttack.clear();
             }
         }
@@ -354,8 +362,10 @@ export class World {
         actor.attackCooldown -= deltaMs;
         if (actor.attackCooldown > 0 || nearest === undefined) return;
 
-        const alcancaNormal = this.botCanHit(actor, nearest, 1);
-        const alcancaCarregado = this.botCanHit(actor, nearest, 2);
+        // Os dois extremos da escala: o golpe que sai agora e o que sairia com
+        // a carga cheia. É o que a decisão de carregar compara.
+        const alcancaNormal = this.botCanHit(actor, nearest, chargeAreaMult(0));
+        const alcancaCarregado = this.botCanHit(actor, nearest, chargeAreaMult(1));
         if (!alcancaNormal && !alcancaCarregado) return;
 
         // Taxa por segundo convertida na chance desta janela de `deltaMs`.
@@ -371,7 +381,7 @@ export class World {
             return;
         }
 
-        this.beginAttack(actor, false);
+        this.beginAttack(actor, 0);
         actor.attackCooldown = BOT_ATTACK_COOLDOWN_MS;
     }
 
@@ -396,7 +406,8 @@ export class World {
         // Já sorteou por este golpe: não tenta de novo nos ticks seguintes.
         if (actor.dodgeRolledFor === threat.attackHitAt) return false;
 
-        const elapsed = ATTACK_WINDUP_MS - (threat.attackHitAt - this.now);
+        const janela = attackWindupMs(threat.chargePower);
+        const elapsed = janela - (threat.attackHitAt - this.now);
         if (elapsed < BOT_DODGE_REACTION_MS) return false;
 
         const from = threat.ellipseCenter();
@@ -404,7 +415,7 @@ export class World {
         const dx = to.x - from.x;
         const dy = to.y - from.y;
 
-        const mult = threat.charged ? 2 : 1;
+        const mult = chargeAreaMult(threat.chargePower);
         const perigo = (threat.collisionRx + attackReach(threat.rank) * mult + actor.collisionRx)
             * BOT_DODGE_RANGE_SLACK;
         if (dx * dx + dy * dy > perigo * perigo) return false;
@@ -465,7 +476,7 @@ export class World {
         // Carga pronta: solta assim que o alvo estiver ao alcance dobrado, ou
         // desiste de esperar depois de BOT_CHARGE_HOLD_MS.
         const esperouDemais = elapsed - actor.rank.chargeTime >= BOT_CHARGE_HOLD_MS;
-        if (!this.botCanHit(actor, nearest, 2) && !esperouDemais) return;
+        if (!this.botCanHit(actor, nearest, chargeAreaMult(1)) && !esperouDemais) return;
 
         actor.flipX = nearest.x < actor.x;
         this.releaseAttack(actor);
@@ -479,8 +490,9 @@ export class World {
      * dentro do alcance do rank e — para os golpes retos — alvo na faixa à
      * frente. Não é exato de propósito; errar às vezes é o esperado.
      *
-     * @param mult 1 para golpe normal, 2 para carregado. É o mesmo fator que
-     *        `executeAttackHit` aplica às dimensões da forma.
+     * @param mult Multiplicador de área a testar — `chargeAreaMult(0)` para o
+     *        golpe leve, `chargeAreaMult(1)` para a carga cheia. É o mesmo
+     *        fator que `executeAttackHit` aplica às dimensões da forma.
      */
     private botCanHit(actor: Actor, target: Actor, mult: number): boolean {
         // Bater em quem acabou de renascer ou de levar dano só gasta o cooldown.
@@ -525,12 +537,16 @@ export class World {
         return nearest;
     }
 
-    private beginAttack(actor: Actor, charged: boolean): void {
+    private beginAttack(actor: Actor, power: number): void {
         if (actor.attacking || !actor.alive) return;
+        if (this.now < actor.attackReadyAt) return;
 
         actor.attacking = true;
-        actor.charged = charged;
-        actor.attackHitAt = this.now + ATTACK_WINDUP_MS;
+        actor.chargePower = power;
+        // Golpe mais carregado demora mais para sair: é essa janela que o alvo
+        // tem para esquivar do golpe pesado.
+        actor.attackHitAt = this.now + attackWindupMs(power);
+        actor.attackReadyAt = actor.attackHitAt + attackRecoveryMs(power);
         actor.hitThisAttack.clear();
 
         // A perna do L do cavalo aponta para o inimigo mais próximo. Fica
@@ -552,8 +568,11 @@ export class World {
         const startX = center.x + dir * attacker.collisionRx;
         const startY = center.y;
 
-        const mult = attacker.charged ? 2 : 1;
-        const damage = attacker.charged ? DAMAGE_CHARGED : DAMAGE_NORMAL;
+        // Área e dano saem da mesma potência; os dois já vêm com teto embutido
+        // (AREA_MULT_MAX e DAMAGE_MAX). A geometria abaixo não mudou: continua
+        // recebendo um multiplicador, que agora é fracionário.
+        const mult = chargeAreaMult(attacker.chargePower);
+        const damage = chargeDamage(attacker.chargePower);
         const targets = this.opponentsOf(attacker);
 
         const hits = (test: (t: Actor) => boolean) => {
@@ -662,7 +681,7 @@ export class World {
             length = 1;
         }
 
-        const speed = knockbackSpeed(attacker.charged, target.rank.mass);
+        const speed = knockbackSpeed(attacker.chargePower, target.rank.mass);
         target.knockbackVx = (dx / length) * speed;
         target.knockbackVy = (dy / length) * speed;
     }

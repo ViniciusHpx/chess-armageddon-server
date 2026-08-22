@@ -142,7 +142,7 @@ describe("ArenaRoom", () => {
         await waitTicks(1);
 
         assert.strictEqual(actor.attacking, true, "o golpe deveria ter começado");
-        assert.strictEqual(actor.charged, false, "toque curto não pode virar golpe carregado");
+        assert.ok(actor.atkPower < 50, "toque curto não pode virar golpe carregado");
     });
 
     it("devolve um bot ao time quando o jogador sai", async () => {

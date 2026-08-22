@@ -5,6 +5,8 @@
  * `src/constants/Hierarchy.js` usada apenas para desenhar (textura, tamanho,
  * forma do ataque). Se mudar um valor aqui, espelhe lá.
  */
+import { clamp } from "./mathx.js";
+
 
 export type AttackConfig =
     | { type: "rectangle"; length: number; width: number }
@@ -108,8 +110,95 @@ export const WORLD_HEIGHT = 1774;
 /** Intervalo da simulação, em ms. 20 ticks/s. */
 export const TICK_MS = 50;
 
-/** Atraso entre iniciar o golpe e aplicar o dano (era `delayedCall(200)`). */
-export const ATTACK_WINDUP_MS = 200;
+// ---------------------------------------------------------------------------
+// GOLPE: LEVE <-> CARREGADO
+//
+// Toda a diferença entre um toque no botão e um golpe segurado até o fim sai
+// de UM número: `power`, de 0 a 1, medido pelo servidor como
+// `elapsed / rank.chargeTime` e limitado em 1 — esse clamp é o teto absoluto de
+// tudo o que vem abaixo.
+//
+// Antes `charged` era booleano e só existiam dois golpes (25/50 de dano, área
+// 1x/2x). Os extremos continuam valendo os mesmos números, de propósito: quem
+// solta na hora certa não perdeu nada, e o que nasceu foi o meio da escala.
+//
+// Cada atributo tem mínimo, máximo e um expoente próprio. O expoente é o botão
+// de balanceamento: 1 = linear, acima de 1 concentra o ganho no fim da carga
+// (segurar até o fim vale mais), abaixo de 1 entrega cedo.
+// ---------------------------------------------------------------------------
+
+/** Dano de um toque rápido no botão. */
+export const DAMAGE_LIGHT = 25;
+/** Teto de dano de um único golpe, por mais que se segure. */
+export const DAMAGE_MAX = 50;
+/**
+ * Expoente do dano. Acima de 1: metade da carga rende bem menos que metade do
+ * bônus, então parar no meio não é a jogada ótima — ou se bate leve e rápido,
+ * ou se compromete com a carga inteira.
+ */
+export const DAMAGE_CHARGE_EXP = 1.6;
+
+/** Multiplicador das dimensões da forma do golpe: 1 = tamanho de projeto. */
+export const AREA_MULT_LIGHT = 1;
+/** Teto de área. Dobrar já leva a rainha a 300 px de alcance. */
+export const AREA_MULT_MAX = 2;
+/**
+ * Expoente da área: linear.
+ *
+ * A área é o atributo que decide se o golpe ACERTA, e o bot mira por ela
+ * (`botCanHit`). Curva aqui torna o alcance difícil de prever no olho — o
+ * jogador precisa saber onde o golpe pega.
+ */
+export const AREA_CHARGE_EXP = 1;
+
+/**
+ * Atraso entre soltar o botão e o dano sair.
+ *
+ * Escala com a carga: o toque rápido sai mais cedo do que os 200 ms fixos de
+ * antes, e o golpe cheio se anuncia por mais tempo. É essa janela que dá ao
+ * alvo a chance de esquivar do golpe pesado.
+ */
+export const ATTACK_WINDUP_LIGHT_MS = 160;
+export const ATTACK_WINDUP_MAX_MS = 260;
+
+/**
+ * Espera depois do golpe antes de poder atacar ou carregar de novo.
+ *
+ * É a desvantagem do carregado e o freio de spam do leve: sem ela o ciclo do
+ * humano era só o windup, e segurar o botão de ataque sem parar rendia golpe
+ * atrás de golpe. Bots continuam limitados também por BOT_ATTACK_COOLDOWN_MS
+ * (vale o maior dos dois).
+ */
+export const ATTACK_RECOVERY_LIGHT_MS = 60;
+export const ATTACK_RECOVERY_MAX_MS = 340;
+
+/** Potência (0..1) do tempo de carga cumprido, com o teto de 1 aplicado. */
+export function chargePower(elapsedMs: number, chargeTimeMs: number): number {
+    if (!(chargeTimeMs > 0)) return 1;
+    return clamp(elapsedMs / chargeTimeMs, 0, 1);
+}
+
+/** Interpola entre `min` e `max` pela potência, com o expoente do atributo. */
+function scaleByCharge(power: number, min: number, max: number, exp: number): number {
+    const p = clamp(power, 0, 1);
+    return min + (max - min) * Math.pow(p, exp);
+}
+
+export function chargeDamage(power: number): number {
+    return scaleByCharge(power, DAMAGE_LIGHT, DAMAGE_MAX, DAMAGE_CHARGE_EXP);
+}
+
+export function chargeAreaMult(power: number): number {
+    return scaleByCharge(power, AREA_MULT_LIGHT, AREA_MULT_MAX, AREA_CHARGE_EXP);
+}
+
+export function attackWindupMs(power: number): number {
+    return scaleByCharge(power, ATTACK_WINDUP_LIGHT_MS, ATTACK_WINDUP_MAX_MS, 1);
+}
+
+export function attackRecoveryMs(power: number): number {
+    return scaleByCharge(power, ATTACK_RECOVERY_LIGHT_MS, ATTACK_RECOVERY_MAX_MS, 1);
+}
 
 /**
  * Fração da velocidade mantida durante o golpe.
@@ -125,8 +214,12 @@ export const ATTACK_WINDUP_MS = 200;
  */
 export const ATTACK_MOVE_FACTOR = 0.6;
 
-export const DAMAGE_NORMAL = 25;
-export const DAMAGE_CHARGED = 50;
+/**
+ * Apelidos dos extremos da escala, mantidos porque a IA raciocina com eles
+ * ("este golpe mata se eu carregar?" em `botShouldCharge`).
+ */
+export const DAMAGE_NORMAL = DAMAGE_LIGHT;
+export const DAMAGE_CHARGED = DAMAGE_MAX;
 
 /** Invulnerabilidade após levar dano. */
 export const HIT_INVULN_MS = 500;
@@ -265,6 +358,13 @@ export const KNOCKBACK_SPEED = 420;
 export const KNOCKBACK_CHARGED_FACTOR = 1.8;
 
 /**
+ * Expoente do empurrão. Entre o do dano (1,6) e o da área (1): o empurrão
+ * acompanha a força do golpe sem que uma carga curta já arremesse o alvo para
+ * fora do alcance de quem bateu.
+ */
+export const KNOCKBACK_CHARGE_EXP = 1.3;
+
+/**
  * Constante de tempo do decaimento exponencial, em ms.
  *
  * O deslocamento total é aproximadamente `velocidade * (esta constante / 1000)`
@@ -283,9 +383,9 @@ export const KNOCKBACK_MIN_SPEED = 5;
  * longe. A raiz mantém a diferença perceptível sem ficar discrepante — é o
  * mesmo motivo pelo qual o carregado usa 1,8 e não 2.
  */
-export function knockbackSpeed(charged: boolean, targetMass: number): number {
-    const force = charged ? KNOCKBACK_SPEED * KNOCKBACK_CHARGED_FACTOR : KNOCKBACK_SPEED;
-    return force / Math.sqrt(Math.max(targetMass, 0.01));
+export function knockbackSpeed(power: number, targetMass: number): number {
+    const fator = scaleByCharge(power, 1, KNOCKBACK_CHARGED_FACTOR, KNOCKBACK_CHARGE_EXP);
+    return (KNOCKBACK_SPEED * fator) / Math.sqrt(Math.max(targetMass, 0.01));
 }
 
 /**

@@ -5,7 +5,10 @@ import { Actor } from "../src/sim/Actor.js";
 import {
     RANKS, TICK_MS, DAMAGE_NORMAL, DAMAGE_CHARGED, HIT_INVULN_MS, BOT_RESPAWN_DELAY_MS, INPUT_TIMEOUT_MS,
     BOT_ATTACK_COOLDOWN_MS, RESPAWN_INVULN_MS, attackHalfBand, attackReach,
-    KNOCKBACK_DECAY_MS, knockbackSpeed, ATTACK_WINDUP_MS, BOT_CHARGE_HOLD_MS,
+    KNOCKBACK_DECAY_MS, knockbackSpeed, BOT_CHARGE_HOLD_MS,
+    ATTACK_WINDUP_MAX_MS, ATTACK_RECOVERY_MAX_MS, chargeDamage, chargeAreaMult,
+    DAMAGE_LIGHT, DAMAGE_MAX, AREA_MULT_LIGHT, AREA_MULT_MAX, KNOCKBACK_CHARGED_FACTOR,
+    attackWindupMs, attackRecoveryMs, chargePower,
 } from "../src/sim/constants.js";
 
 /**
@@ -173,6 +176,10 @@ describe("World (simulação)", () => {
 
         for (let i = 0; i < 4; i++) {
             placeSideBySide(attacker, bot);
+            // O teste é sobre o respawn, não sobre um duelo: sem calar o bot,
+            // quem mata quem depende do sorteio de ataque dele e o resultado
+            // fica intermitente.
+            bot.attackCooldown = 5000;
             swing(world, attacker);
             advance(world, 300);
             advance(world, HIT_INVULN_MS + TICK_MS);
@@ -333,7 +340,7 @@ describe("World (simulação)", () => {
 
         const antes = target.x;
         swing(world, attacker);
-        advance(world, ATTACK_WINDUP_MS + KNOCKBACK_DECAY_MS * 4);
+        advance(world, ATTACK_WINDUP_MAX_MS + KNOCKBACK_DECAY_MS * 4);
 
         assert.ok(
             target.x > antes + 20,
@@ -357,7 +364,7 @@ describe("World (simulação)", () => {
             if (carregado) advance(world, RANKS.PAWN.chargeTime + TICK_MS);
             placeSideBySide(attacker, target);
             world.releaseAttack(attacker);
-            advance(world, ATTACK_WINDUP_MS + KNOCKBACK_DECAY_MS * 6);
+            advance(world, ATTACK_WINDUP_MAX_MS + KNOCKBACK_DECAY_MS * 6);
 
             return target.x - antes;
         };
@@ -375,8 +382,8 @@ describe("World (simulação)", () => {
 
     it("peça pesada é empurrada menos que peça leve", () => {
         // A raiz da massa é o que impede a torre de virar uma parede imóvel.
-        const peao = knockbackSpeed(false, RANKS.PAWN.mass);
-        const torre = knockbackSpeed(false, RANKS.TOWER.mass);
+        const peao = knockbackSpeed(0, RANKS.PAWN.mass);
+        const torre = knockbackSpeed(0, RANKS.TOWER.mass);
 
         assert.ok(torre < peao, "a torre (massa 4) tem de resistir mais que o peão");
         assert.ok(
@@ -402,7 +409,7 @@ describe("World (simulação)", () => {
         const antes = alvos.map((t) => ({ x: t.x, y: t.y }));
 
         swing(world, attacker);
-        advance(world, ATTACK_WINDUP_MS + KNOCKBACK_DECAY_MS * 4);
+        advance(world, ATTACK_WINDUP_MAX_MS + KNOCKBACK_DECAY_MS * 4);
 
         alvos.forEach((t, i) => {
             assert.ok(t.x > antes[i].x, `alvo ${i} deveria ter sido empurrado para longe em X`);
@@ -424,7 +431,7 @@ describe("World (simulação)", () => {
         const antesHp = target.currentHealth;
 
         swing(world, attacker);
-        advance(world, ATTACK_WINDUP_MS + KNOCKBACK_DECAY_MS * 4);
+        advance(world, ATTACK_WINDUP_MAX_MS + KNOCKBACK_DECAY_MS * 4);
 
         assert.strictEqual(target.currentHealth, antesHp, "invulnerável não perde vida");
         assert.strictEqual(
@@ -440,7 +447,7 @@ describe("World (simulação)", () => {
         placeSideBySide(attacker, target);
 
         swing(world, attacker);
-        advance(world, ATTACK_WINDUP_MS + KNOCKBACK_DECAY_MS * 10);
+        advance(world, ATTACK_WINDUP_MAX_MS + KNOCKBACK_DECAY_MS * 10);
 
         assert.strictEqual(target.knockbackVx, 0);
         assert.strictEqual(target.knockbackVy, 0);
@@ -460,7 +467,7 @@ describe("World (simulação)", () => {
 
         assert.strictEqual(bot.charging, false, "alvo inteiro e colado não justifica carregar");
         assert.strictEqual(bot.attacking, true);
-        assert.strictEqual(bot.charged, false);
+        assert.strictEqual(bot.chargePower, 0);
     });
 
     it("o bot carrega para finalizar quando o normal não mataria", () => {
@@ -505,7 +512,7 @@ describe("World (simulação)", () => {
             assert.strictEqual(bot.charging, true);
 
             // Segura a pose enquanto a carga corre e o golpe conecta.
-            const passos = (RANKS.PAWN.chargeTime + ATTACK_WINDUP_MS * 2) / TICK_MS;
+            const passos = (RANKS.PAWN.chargeTime + ATTACK_WINDUP_MAX_MS * 2 + ATTACK_RECOVERY_MAX_MS) / TICK_MS;
             for (let i = 0; i < passos; i++) {
                 afasta(bot, target, 110); // alvo entrou no alcance
                 target.invulnUntil = 0;
@@ -571,5 +578,136 @@ describe("World (simulação)", () => {
         const half = RANKS.PAWN.size.width / 2;
         assert.ok(actor.x >= half - 0.01, `x=${actor.x} passou da borda esquerda`);
         assert.ok(actor.y >= half - 0.01, `y=${actor.y} passou da borda de cima`);
+    });
+
+    // -----------------------------------------------------------------------
+    // ESCALA DA CARGA
+    // -----------------------------------------------------------------------
+
+    it("dano, área e empurrão crescem com a carga e param no teto", () => {
+        const meio = 0.5;
+
+        assert.strictEqual(chargeDamage(0), DAMAGE_LIGHT, "toque = golpe leve");
+        assert.strictEqual(chargeDamage(1), DAMAGE_MAX, "carga cheia = teto");
+        assert.ok(
+            chargeDamage(meio) > chargeDamage(0) && chargeDamage(meio) < chargeDamage(1),
+            "meia carga tem de ficar no meio da escala",
+        );
+
+        assert.strictEqual(chargeAreaMult(0), AREA_MULT_LIGHT);
+        assert.strictEqual(chargeAreaMult(1), AREA_MULT_MAX);
+
+        const kbLeve = knockbackSpeed(0, RANKS.PAWN.mass);
+        const kbCheio = knockbackSpeed(1, RANKS.PAWN.mass);
+        assert.ok(kbCheio > kbLeve, "carga cheia empurra mais");
+        assert.ok(
+            Math.abs(kbCheio - kbLeve * KNOCKBACK_CHARGED_FACTOR) < 1e-6,
+            "o empurrão máximo é exatamente o fator documentado",
+        );
+    });
+
+    it("segurar além do tempo do rank não aumenta nada", () => {
+        // O teto vive no clamp de `chargePower`: qualquer excesso vira 1.
+        assert.strictEqual(chargePower(RANKS.PAWN.chargeTime * 10, RANKS.PAWN.chargeTime), 1);
+
+        for (const excesso of [1.5, 4, 100]) {
+            assert.strictEqual(chargeDamage(excesso), DAMAGE_MAX, "dano não passa do teto");
+            assert.strictEqual(chargeAreaMult(excesso), AREA_MULT_MAX, "área não passa do teto");
+            assert.strictEqual(
+                knockbackSpeed(excesso, RANKS.PAWN.mass),
+                knockbackSpeed(1, RANKS.PAWN.mass),
+                "empurrão não passa do teto",
+            );
+        }
+    });
+
+    it("o dano do golpe sai da carga medida pelo servidor", () => {
+        const world = new World();
+        const attacker = world.addPlayer("a", "ally", "A");
+        const target = world.addPlayer("b", "enemy", "B");
+        placeSideBySide(attacker, target);
+
+        // Segura metade do tempo do rank e solta.
+        world.startCharge(attacker);
+        advance(world, RANKS.PAWN.chargeTime / 2);
+        placeSideBySide(attacker, target);
+        world.releaseAttack(attacker);
+
+        const esperado = chargeDamage(attacker.chargePower);
+        assert.ok(
+            attacker.chargePower > 0.4 && attacker.chargePower < 0.6,
+            `meia carga deveria dar potência perto de 0,5 (deu ${attacker.chargePower})`,
+        );
+
+        const vidaAntes = target.currentHealth;
+        advance(world, ATTACK_WINDUP_MAX_MS + TICK_MS);
+
+        const tirou = vidaAntes - target.currentHealth;
+        assert.ok(
+            Math.abs(tirou - esperado) < 0.01,
+            `o golpe deveria tirar ${esperado.toFixed(1)} (tirou ${tirou})`,
+        );
+        assert.ok(tirou > DAMAGE_LIGHT && tirou < DAMAGE_MAX, "meia carga fica entre os extremos");
+    });
+
+    it("o cliente não consegue inflar a carga mandando 'soltei' várias vezes", () => {
+        const world = new World();
+        const attacker = world.addPlayer("a", "ally", "A");
+        const target = world.addPlayer("b", "enemy", "B");
+        placeSideBySide(attacker, target);
+
+        world.startCharge(attacker);
+        advance(world, TICK_MS);            // carga curtíssima
+        placeSideBySide(attacker, target);
+
+        // Rajada de "soltei": só a primeira vale, as outras não estão carregando.
+        for (let i = 0; i < 20; i++) world.releaseAttack(attacker);
+
+        assert.ok(attacker.chargePower < 0.2, "a potência é a do tempo real segurado");
+
+        const vidaAntes = target.currentHealth;
+        advance(world, ATTACK_WINDUP_MAX_MS + TICK_MS);
+        const tirou = vidaAntes - target.currentHealth;
+
+        assert.ok(
+            tirou <= DAMAGE_MAX,
+            `nenhuma rajada pode passar do teto de dano (tirou ${tirou})`,
+        );
+        assert.ok(tirou < DAMAGE_LIGHT * 1.2, "e nem somar vários golpes num só");
+    });
+
+    it("a recuperação impede encadear golpes", () => {
+        const world = new World();
+        const attacker = world.addPlayer("a", "ally", "A");
+        const target = world.addPlayer("b", "enemy", "B");
+        placeSideBySide(attacker, target);
+
+        // Golpe leve: acerta em `attackWindupMs(0)` e libera em
+        // + `attackRecoveryMs(0)`. Um tick depois do impacto ainda está preso.
+        swing(world, attacker);
+        const primeiro = attacker.attackHitAt;
+        // Para no tick 200 ms: o golpe leve já bateu (windup 160) e a
+        // recuperação ainda corre (libera em 220).
+        advance(world, 180);
+        assert.strictEqual(attacker.attacking, false, "o golpe leve já deveria ter saído");
+
+        world.startCharge(attacker);
+        assert.strictEqual(attacker.charging, false, "carga cedo demais tem de ser recusada");
+
+        advance(world, attackRecoveryMs(0) + TICK_MS * 2);
+        world.startCharge(attacker);
+        assert.strictEqual(attacker.charging, true, "passada a recuperação, pode carregar de novo");
+        assert.ok(primeiro > 0);
+    });
+
+    it("golpe mais carregado demora mais para sair", () => {
+        assert.ok(
+            attackWindupMs(1) > attackWindupMs(0),
+            "o windup do carregado é a janela em que dá para esquivar dele",
+        );
+        assert.ok(
+            attackRecoveryMs(1) > attackRecoveryMs(0),
+            "e a recuperação maior é o preço de ter carregado",
+        );
     });
 });

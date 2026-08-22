@@ -35,7 +35,16 @@ export class ActorState extends Schema {
 
     /** Golpe em curso: o cliente desenha a forma enquanto isto for true. */
     @type("boolean") attacking: boolean = false;
-    @type("boolean") charged: boolean = false;
+
+    /**
+     * Potência do golpe em curso, 0..100.
+     *
+     * Era o booleano `charged`. O cliente desenha a forma do golpe com este
+     * número (área proporcional), então ele precisa ser o MESMO que o servidor
+     * usou para calcular o dano — daí trafegar o valor final, e não o tempo de
+     * carga, que cada lado arredondaria de um jeito.
+     */
+    @type("uint8") atkPower: number = 0;
 
     /** Lado (em Y) da perna do L do cavalo: -1 ou 1. */
     @type("int8") atkSide: number = 1;
