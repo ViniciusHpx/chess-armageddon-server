@@ -28,7 +28,7 @@ import {
     BOT_CHARGE_HOLD_MS, RESPAWN_INVULN_MS, Team, WORLD_HEIGHT, WORLD_WIDTH,
     BOT_DASH_COOLDOWN_MS, BOT_DODGE_CHANCE, BOT_DODGE_RANGE_SLACK, BOT_DODGE_REACTION_MS,
     DASH_COOLDOWN_MS, DASH_DISTANCE, DASH_INVULN_MS, DASH_SPEED, DASH_TIMEOUT_MS,
-    attackHalfBand, attackReach, knockbackSpeed,
+    attackHalfBand, attackReach, knockbackSpeed, XP_PER_KILL,
     attackRecoveryMs, attackWindupMs, chargeAreaMult, chargeDamage, chargePower,
 } from "./constants.js";
 
@@ -657,8 +657,11 @@ export class World {
 
         if (!killed) return;
 
+        // Recompensa do abate. `takeDamage` só devolve `killed` uma vez (o alvo
+        // sai de `alive` em seguida) e o alvo já está em `hitThisAttack`, então
+        // não há caminho para o mesmo abate pagar XP duas vezes.
         attacker.addAuraFromKill(target);
-        attacker.promote();
+        attacker.addExperience(XP_PER_KILL);
         attacker.kills++;
         target.deaths++;
         this.kill(target);

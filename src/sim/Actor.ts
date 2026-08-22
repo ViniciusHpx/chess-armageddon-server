@@ -10,6 +10,7 @@
 import {
     RANKS, RankKey, RankConfig, AURA_KILL_VALUES, Team,
     WORLD_WIDTH, WORLD_HEIGHT, HIT_INVULN_MS,
+    levelFromXp, rankKeyForLevel,
 } from "./constants.js";
 import { clamp } from "./mathx.js";
 
@@ -32,6 +33,12 @@ export class Actor {
     maxHealth = RANKS.PAWN.health;
     currentHealth = RANKS.PAWN.health;
     aura = 0;
+
+    /**
+     * Experiência acumulada. Só o servidor escreve aqui — o cliente não tem
+     * mensagem para mexer em XP, nível ou rank.
+     */
+    xp = 0;
 
     alive = true;
     /** Instante a partir do qual pode renascer. */
@@ -181,15 +188,40 @@ export class Actor {
         this.rankKey = key;
     }
 
-    promote(): void {
-        const next = this.rank.next;
-        if (!next) return;
-        this.setRank(next);
-        this.maxHealth = this.rank.health;
-        this.currentHealth = this.maxHealth;
+    /** Nível atual, derivado do rank — não é guardado em lugar nenhum. */
+    get level(): number {
+        return this.rank.index + 1;
     }
 
+    /**
+     * Soma XP e sobe o rank se a XP total já der para isso.
+     *
+     * Ponto único de progressão: a XP não é gasta, o nível é recalculado da
+     * total, e subir mais de um nível de uma vez (se um dia um abate valer
+     * muito) simplesmente funciona.
+     *
+     * @returns true se o nível mudou — o chamador usa para feedback.
+     */
+    addExperience(amount: number): boolean {
+        if (!(amount > 0)) return false;
+
+        this.xp += amount;
+        const nivel = levelFromXp(this.xp);
+        if (nivel <= this.level) return false;
+
+        this.setRank(rankKeyForLevel(nivel));
+        this.maxHealth = this.rank.health;
+        this.currentHealth = this.maxHealth;
+        return true;
+    }
+
+    /**
+     * Volta ao peão na morte. Zera a XP junto: sem isso o rank voltaria no
+     * quadro seguinte pela XP acumulada e morrer não custaria nada — a mesma
+     * punição que a aura já tinha.
+     */
     resetToPawn(): void {
+        this.xp = 0;
         this.setRank("PAWN");
         this.maxHealth = RANKS.PAWN.health;
         this.currentHealth = this.maxHealth;

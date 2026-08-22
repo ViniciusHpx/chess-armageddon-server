@@ -7,6 +7,7 @@ import {
     BOT_ATTACK_COOLDOWN_MS, RESPAWN_INVULN_MS, attackHalfBand, attackReach,
     KNOCKBACK_DECAY_MS, knockbackSpeed, BOT_CHARGE_HOLD_MS,
     ATTACK_WINDUP_MAX_MS, ATTACK_RECOVERY_MAX_MS, chargeDamage, chargeAreaMult,
+    XP_PER_KILL, XP_PER_LEVEL, MAX_LEVEL, levelFromXp, xpProgress,
     DAMAGE_LIGHT, DAMAGE_MAX, AREA_MULT_LIGHT, AREA_MULT_MAX, KNOCKBACK_CHARGED_FACTOR,
     attackWindupMs, attackRecoveryMs, chargePower,
 } from "../src/sim/constants.js";
@@ -122,7 +123,7 @@ describe("World (simulação)", () => {
         );
     });
 
-    it("matar promove o atacante e dá aura", () => {
+    it("matar dá XP e aura, e o rank sobe só quando a XP dá o nível", () => {
         const world = new World();
         const attacker = world.addPlayer("a", "ally", "A");
         const target = world.addPlayer("b", "enemy", "B");
@@ -136,8 +137,8 @@ describe("World (simulação)", () => {
         }
 
         assert.strictEqual(target.alive, false, "o alvo deveria ter morrido");
-        assert.strictEqual(attacker.rankKey, "TOWER", "matar promove peão para torre");
-        assert.strictEqual(attacker.currentHealth, RANKS.TOWER.health);
+        assert.strictEqual(attacker.xp, XP_PER_KILL, "um abate paga XP_PER_KILL uma única vez");
+        assert.strictEqual(attacker.rankKey, "PAWN", "30 XP ainda é nível 1");
         assert.strictEqual(attacker.aura, 10, "abater um peão dá 10 de aura");
     });
 
@@ -709,5 +710,78 @@ describe("World (simulação)", () => {
             attackRecoveryMs(1) > attackRecoveryMs(0),
             "e a recuperação maior é o preço de ter carregado",
         );
+    });
+
+    // -----------------------------------------------------------------------
+    // EXPERIÊNCIA E NÍVEL
+    // -----------------------------------------------------------------------
+
+    it("a XP acumula e nunca é gasta ao subir de nível", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+
+        assert.strictEqual(actor.xp, 0, "começa zerado");
+        assert.strictEqual(actor.level, 1);
+        assert.strictEqual(actor.rankKey, "PAWN");
+
+        // 3 abates: 90 XP, ainda nível 1.
+        for (let i = 0; i < 3; i++) actor.addExperience(XP_PER_KILL);
+        assert.strictEqual(actor.xp, 90);
+        assert.strictEqual(actor.level, 1);
+
+        // O quarto leva a 120: sobe de nível SEM zerar a XP.
+        const subiu = actor.addExperience(XP_PER_KILL);
+        assert.strictEqual(subiu, true);
+        assert.strictEqual(actor.xp, 120, "a XP continua acumulada, não volta para 0");
+        assert.strictEqual(actor.level, 2);
+        assert.strictEqual(actor.rankKey, "TOWER");
+        assert.strictEqual(actor.currentHealth, RANKS.TOWER.health, "o nível novo cura");
+
+        // 190 + 30 = 220 -> nível 3.
+        actor.xp = 190;
+        actor.addExperience(XP_PER_KILL);
+        assert.strictEqual(actor.xp, 220);
+        assert.strictEqual(actor.level, 3);
+        assert.strictEqual(actor.rankKey, "HORSE");
+    });
+
+    it("a sequência de ranks segue a ordem antiga, e o nível máximo não estoura", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+
+        const esperado = ["PAWN", "TOWER", "HORSE", "BISHOP", "QUEEN"];
+        for (let nivel = 1; nivel <= MAX_LEVEL; nivel++) {
+            actor.xp = (nivel - 1) * XP_PER_LEVEL;
+            actor.addExperience(0.0001);
+            assert.strictEqual(actor.rankKey, esperado[nivel - 1], `nível ${nivel}`);
+        }
+
+        // Muito além do teto: continua rainha, sem erro nem rank inexistente.
+        actor.addExperience(XP_PER_KILL * 100);
+        assert.strictEqual(actor.level, MAX_LEVEL);
+        assert.strictEqual(actor.rankKey, "QUEEN");
+        assert.strictEqual(levelFromXp(999999), MAX_LEVEL);
+    });
+
+    it("a barra mostra o progresso do nível, não a XP total", () => {
+        assert.deepStrictEqual(xpProgress(0), { level: 1, into: 0, need: 100, max: false });
+        assert.deepStrictEqual(xpProgress(120), { level: 2, into: 20, need: 100, max: false });
+        assert.deepStrictEqual(xpProgress(190), { level: 2, into: 90, need: 100, max: false });
+        assert.deepStrictEqual(xpProgress(200), { level: 3, into: 0, need: 100, max: false });
+
+        const cheio = xpProgress(XP_PER_LEVEL * (MAX_LEVEL - 1) + 55);
+        assert.strictEqual(cheio.level, MAX_LEVEL);
+        assert.strictEqual(cheio.max, true, "no teto a barra fica cheia e não calcula próximo nível");
+    });
+
+    it("morrer zera a XP junto com o rank", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        actor.addExperience(XP_PER_LEVEL * 3);
+        assert.strictEqual(actor.rankKey, "BISHOP");
+
+        actor.resetToPawn();
+        assert.strictEqual(actor.xp, 0, "sem isso o rank voltaria sozinho no quadro seguinte");
+        assert.strictEqual(actor.rankKey, "PAWN");
     });
 });

@@ -26,6 +26,12 @@ export class ActorState extends Schema {
     @type("uint16") maxHp: number = 0;
     @type("uint16") aura: number = 0;
 
+    /**
+     * Experiência acumulada. O NÍVEL não trafega: é `rank + 1`, e mandar os
+     * dois abriria espaço para eles discordarem.
+     */
+    @type("uint16") xp: number = 0;
+
     /** Placar da sessão, exibido no painel do TAB. */
     @type("uint16") kills: number = 0;
     @type("uint16") deaths: number = 0;

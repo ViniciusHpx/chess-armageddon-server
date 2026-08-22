@@ -90,6 +90,56 @@ export const RANKS: Record<RankKey, RankConfig> = {
 /** Mesma ordem de `RankConfig.index`. Usada para decodificar o uint8. */
 export const RANK_ORDER: RankKey[] = ["PAWN", "TOWER", "HORSE", "BISHOP", "QUEEN"];
 
+// ---------------------------------------------------------------------------
+// EXPERIÊNCIA E NÍVEL
+//
+// O rank deixou de subir direto no abate: o abate dá XP, e o NÍVEL sai da XP
+// acumulada. Nível e rank são a mesma coisa vista de dois jeitos — nível 1 é
+// peão, 5 é rainha, na ordem de `RANK_ORDER` —, então o nível não trafega nem
+// é guardado: deriva de `RANKS[rankKey].index`. Uma fonte de verdade só.
+//
+// A XP nunca é gasta ao subir de nível; ela só acumula. É por isso que o
+// nível é uma divisão da XP total, e não um contador que zera.
+// ---------------------------------------------------------------------------
+
+export const XP_PER_KILL = 30;
+export const XP_PER_LEVEL = 100;
+
+/** Nível mais alto que existe = quantidade de ranks. */
+export const MAX_LEVEL = RANK_ORDER.length;
+
+/** Nível (1..MAX_LEVEL) correspondente a uma XP total. */
+export function levelFromXp(xp: number): number {
+    const nivel = Math.floor(Math.max(0, xp) / XP_PER_LEVEL) + 1;
+    return Math.min(nivel, MAX_LEVEL);
+}
+
+/** Rank de um nível. Nível 1 = peão, MAX_LEVEL = rainha. */
+export function rankKeyForLevel(level: number): RankKey {
+    const i = clamp(Math.round(level), 1, MAX_LEVEL) - 1;
+    return RANK_ORDER[i];
+}
+
+/**
+ * Progresso dentro do nível atual, para a barra.
+ *
+ * `into`/`need` são o que a barra mostra (20/100), não a XP total: a XP total
+ * passa dos 100 e encheria a barra para sempre. No nível máximo devolve a
+ * barra cheia e `max: true` — não existe "próximo nível" para calcular.
+ */
+export function xpProgress(xp: number): { level: number; into: number; need: number; max: boolean } {
+    const level = levelFromXp(xp);
+    if (level >= MAX_LEVEL) {
+        return { level, into: XP_PER_LEVEL, need: XP_PER_LEVEL, max: true };
+    }
+    return {
+        level,
+        into: Math.max(0, xp) - (level - 1) * XP_PER_LEVEL,
+        need: XP_PER_LEVEL,
+        max: false,
+    };
+}
+
 /** Aura concedida ao abater cada tipo de inimigo. */
 export const AURA_KILL_VALUES: Record<string, number> = {
     pawn: 10,
