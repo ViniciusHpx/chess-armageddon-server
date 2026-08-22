@@ -157,4 +157,115 @@ describe("ArenaRoom", () => {
         assert.strictEqual(room.state.actors.has(client.sessionId), false);
         assert.strictEqual(room.state.actors.size, TEAM_SIZE * 2);
     });
+
+    // -----------------------------------------------------------------------
+    // LOBBY: CRIAÇÃO, ENTRADA E LOTAÇÃO
+    // -----------------------------------------------------------------------
+
+    it("respeita a quantidade de bots pedida na criação", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", { bots: 2 });
+
+        assert.strictEqual(room.state.actors.size, 4, "2 bots por time");
+
+        // Os outros slots ficam vazios e são para humanos.
+        const client = await colyseus.connectTo(room, { name: "A" });
+        assert.strictEqual(room.state.actors.size, 5, "entrou em slot vazio, sem tirar bot");
+        assert.ok(client.sessionId);
+    });
+
+    it("recusa configuração inválida de bots vinda do cliente", async () => {
+        for (const bots of [99, -3, "muitos", null, 2.9, NaN]) {
+            const room = await colyseus.createRoom<ArenaState>("arena", { bots } as never);
+            const total = room.state.actors.size;
+            assert.ok(
+                total <= TEAM_SIZE * 2 && total % 2 === 0,
+                `bots=${String(bots)} gerou ${total} atores`,
+            );
+            await room.disconnect();
+        }
+    });
+
+    it("publica jogadores e bots na metadata para o lobby", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", { bots: 3 });
+        assert.deepStrictEqual(
+            { players: room.metadata.players, bots: room.metadata.bots },
+            { players: 0, bots: 6 },
+        );
+
+        await colyseus.connectTo(room, { name: "A" });
+        assert.strictEqual(room.metadata.players, 1, "a metadata acompanha quem entrou");
+    });
+
+    it("sala lotada é travada e recusa entrada", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", { bots: 0 });
+
+        // 10 humanos: 5 por time, sem bot nenhum para ceder lugar.
+        for (let i = 0; i < TEAM_SIZE * 2; i++) {
+            await colyseus.connectTo(room, { name: `P${i}` });
+        }
+
+        assert.strictEqual(room.state.actors.size, TEAM_SIZE * 2);
+        assert.strictEqual(room.locked, true, "sala cheia tem de sair da listagem do lobby");
+
+        await assert.rejects(
+            () => colyseus.connectTo(room, { name: "Tarde demais" }),
+            "o 11º jogador não pode entrar",
+        );
+    });
+
+    it("dois pedidos simultâneos pelo último slot: só um entra", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", { bots: 0 });
+
+        // Enche até sobrar exatamente um slot.
+        for (let i = 0; i < TEAM_SIZE * 2 - 1; i++) {
+            await colyseus.connectTo(room, { name: `P${i}` });
+        }
+
+        const resultados = await Promise.allSettled([
+            colyseus.connectTo(room, { name: "X" }),
+            colyseus.connectTo(room, { name: "Y" }),
+        ]);
+
+        const entraram = resultados.filter((r) => r.status === "fulfilled").length;
+        assert.strictEqual(entraram, 1, "o segundo pedido tem de ser recusado");
+        assert.strictEqual(room.state.actors.size, TEAM_SIZE * 2, "o time não estoura");
+        assert.strictEqual(room.locked, true);
+    });
+
+    it("distribui os jogadores entre os dois times", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", { bots: 0 });
+
+        for (let i = 0; i < 4; i++) await colyseus.connectTo(room, { name: `P${i}` });
+
+        let allies = 0;
+        let enemies = 0;
+        room.state.actors.forEach((a) => (a.team === 0 ? allies++ : enemies++));
+        assert.deepStrictEqual([allies, enemies], [2, 2], "quatro humanos = dois de cada lado");
+    });
+
+    it("sala sem bots não ganha bots quando um jogador sai", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", { bots: 0 });
+        const a = await colyseus.connectTo(room, { name: "A" });
+        await colyseus.connectTo(room, { name: "B" });
+
+        await a.leave(true);
+        await waitTicks(2);
+
+        assert.strictEqual(room.state.actors.size, 1, "o slot volta a ficar vago, sem inventar bot");
+    });
+
+    it("sala com bots repõe o bot quando o jogador sai", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", { bots: TEAM_SIZE });
+        const a = await colyseus.connectTo(room, { name: "A" });
+
+        assert.strictEqual(room.state.actors.size, TEAM_SIZE * 2);
+
+        await a.leave(true);
+        await waitTicks(2);
+
+        assert.strictEqual(room.state.actors.size, TEAM_SIZE * 2, "o bot volta ao lugar");
+        let humanos = 0;
+        room.state.actors.forEach((x) => { if (!x.bot) humanos++; });
+        assert.strictEqual(humanos, 0);
+    });
 });

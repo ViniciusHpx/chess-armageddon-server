@@ -5,6 +5,7 @@ import {
     defineRoom,
     monitor,
     playground,
+    LobbyRoom,
 } from "colyseus";
 
 import { ArenaRoom } from "./rooms/ArenaRoom.js";
@@ -12,6 +13,15 @@ import { ArenaRoom } from "./rooms/ArenaRoom.js";
 const server = defineServer({
     rooms: {
         arena: defineRoom(ArenaRoom),
+
+        /**
+         * Lobby embutido do Colyseus: mantém a lista de salas `arena` e a
+         * empurra para quem estiver conectado (eventos `rooms`, `+` e `-`).
+         *
+         * É o que evita polling no cliente — a lista só chega quando muda, e
+         * quem publica a mudança é a própria `ArenaRoom` via `updateLobby()`.
+         */
+        lobby: defineRoom(LobbyRoom),
     },
 
     express: (app) => {

@@ -1,4 +1,4 @@
-import { Room, Client, CloseCode } from "colyseus";
+import { Room, Client, CloseCode, ServerError, updateLobby } from "colyseus";
 import { ArenaState, ActorState } from "./schema/ArenaState.js";
 import { Actor } from "../sim/Actor.js";
 import { World } from "../sim/World.js";
@@ -15,6 +15,10 @@ import {
  *   "a"  1 | 0         1 = apertou o botão de ataque, 0 = soltou
  *   "d"  -             pediu um dash (direção e cooldown quem decide é o World)
  *   "r"  -             pediu para renascer (botão RENASCER)
+ *
+ * Entrada: o cliente cria a sala (`client.create("arena", { name, bots })`)
+ * ou entra numa existente (`client.joinById(id, { name })`), sempre a partir
+ * do lobby. `bots` é saneado aqui; o time é escolhido pelo servidor.
  *
  * Servidor -> cliente:
  *   state             posições, vida, rank, aura, estado de golpe (schema)
@@ -36,6 +40,15 @@ export class ArenaRoom extends Room {
     maxMessagesPerSecond = 60;
 
     state = new ArenaState();
+
+    /**
+     * Bots com que cada time NASCE, escolhido por quem criou a sala (0..5).
+     *
+     * Guardado porque também é o teto de reposição: quando um humano sai, o
+     * bot só volta se o time tiver menos bots que isto. Sem esse teto, uma
+     * sala criada com 0 bots ganharia bots do nada na primeira saída.
+     */
+    private botsPerTeam = TEAM_SIZE;
 
     private world = new World();
 
@@ -72,30 +85,45 @@ export class ArenaRoom extends Room {
         },
     };
 
-    onCreate(): void {
-        // Enche os dois times de bots: quem entrar primeiro já tem com quem lutar.
-        for (let i = 0; i < TEAM_SIZE; i++) {
+    /**
+     * @param options.bots Bots por time pedidos por quem criou a sala. Vem do
+     *        cliente, então é saneado aqui: qualquer coisa fora de 0..TEAM_SIZE
+     *        (ou não numérica) cai no padrão.
+     */
+    onCreate(options: { bots?: unknown } = {}): void {
+        this.botsPerTeam = sanitizeBots(options.bots);
+
+        for (let i = 0; i < this.botsPerTeam; i++) {
             this.spawnBot("ally");
             this.spawnBot("enemy");
         }
 
         this.setPatchRate(TICK_MS);
         this.setSimulationInterval((deltaMs) => this.step(deltaMs), TICK_MS);
+        this.publish();
     }
 
     onJoin(client: Client, options: { name?: string } = {}): void {
         const team = this.pickTeam();
 
-        // Abre vaga tirando um bot, para o time não passar de TEAM_SIZE.
+        // Sem time com vaga a sala está cheia. `onJoin` roda uma de cada vez
+        // na sala, então dois pedidos pelo último slot são resolvidos em
+        // sequência: o segundo já vê o slot ocupado e cai aqui.
+        if (!team) throw new ServerError(4001, "Sala cheia");
+
+        // Slot vazio primeiro; só se o time estiver completo é que um bot cede
+        // o lugar. Quem escolhe QUAL bot sai é o servidor (o primeiro achado).
         if (this.world.countTeam(team) >= TEAM_SIZE) {
             const bot = this.world.findBot(team);
-            if (bot) this.despawn(bot.id);
+            if (!bot) throw new ServerError(4001, "Sala cheia");
+            this.despawn(bot.id);
         }
 
         const name = sanitizeName(options.name) || `Jogador ${client.sessionId.slice(0, 4)}`;
         const actor = this.world.addPlayer(client.sessionId, team, name);
         this.state.actors.set(actor.id, new ActorState());
         this.writeActor(actor);
+        this.publish();
 
         console.log(`${name} (${client.sessionId}) entrou no time ${team}`);
     }
@@ -190,11 +218,53 @@ export class ArenaRoom extends Room {
         return this.world.actors.get(client.sessionId);
     }
 
-    /** Time com menos humanos; empate vai para os aliados. */
-    private pickTeam(): Team {
-        const allies = this.world.countTeam("ally", true);
-        const enemies = this.world.countTeam("enemy", true);
-        return enemies < allies ? "enemy" : "ally";
+    /**
+     * Time que recebe o próximo humano, ou `undefined` se a sala está cheia.
+     *
+     * Só entram na disputa os times com vaga — slot livre ou um bot para ceder
+     * o lugar. Entre eles vence o de menos humanos (equilíbrio), e o desempate
+     * é o de menos ocupantes no total.
+     */
+    private pickTeam(): Team | undefined {
+        const candidatos = (["ally", "enemy"] as Team[]).filter((t) => this.hasSlot(t));
+        if (candidatos.length === 0) return undefined;
+
+        return candidatos.sort((a, b) => {
+            const humanos = this.world.countTeam(a, true) - this.world.countTeam(b, true);
+            if (humanos !== 0) return humanos;
+            return this.world.countTeam(a) - this.world.countTeam(b);
+        })[0];
+    }
+
+    /** O time cabe mais um humano (slot vazio ou bot substituível)? */
+    private hasSlot(team: Team): boolean {
+        return this.world.countTeam(team) < TEAM_SIZE || this.world.findBot(team) !== undefined;
+    }
+
+    /**
+     * Publica o estado da sala para o lobby.
+     *
+     * A metadata é o mínimo para a lista decidir: quantos humanos, quantos
+     * bots e o teto. Nada aqui é fonte de verdade — tudo é derivado do `World`
+     * na hora, então não há como divergir do jogo.
+     *
+     * `lock()` é o mecanismo nativo do Colyseus: sala travada some da listagem
+     * e recusa entrada. Serve de "sala cheia" sem inventar um campo de status.
+     */
+    private publish(): void {
+        const humanos = this.world.countTeam("ally", true) + this.world.countTeam("enemy", true);
+        const total = this.world.countTeam("ally") + this.world.countTeam("enemy");
+
+        this.setMetadata({
+            players: humanos,
+            bots: total - humanos,
+            capacity: TEAM_SIZE * 2,
+        });
+
+        if (this.hasSlot("ally") || this.hasSlot("enemy")) this.unlock();
+        else this.lock();
+
+        updateLobby(this);
     }
 
     private spawnBot(team: Team): void {
@@ -208,13 +278,36 @@ export class ArenaRoom extends Room {
         this.state.actors.delete(id);
     }
 
-    /** Remove de vez e devolve um bot para o time não ficar desfalcado. */
+    /**
+     * Remove de vez e devolve um bot ao time — mas só até `botsPerTeam`, o
+     * número escolhido na criação. Assim uma sala feita para humanos (0 bots)
+     * continua sem bots, e o slot simplesmente volta a ficar vago.
+     */
     private dropPlayer(actor: Actor): void {
         const team = actor.team;
         this.despawn(actor.id);
-        if (this.world.countTeam(team) < TEAM_SIZE) this.spawnBot(team);
+
+        const bots = this.world.countTeam(team) - this.world.countTeam(team, true);
+        if (bots < this.botsPerTeam && this.world.countTeam(team) < TEAM_SIZE) {
+            this.spawnBot(team);
+        }
+
+        this.publish();
         console.log(`${actor.name} saiu do time ${team}`);
     }
+}
+
+/**
+ * Quantidade de bots por time pedida pelo cliente.
+ *
+ * Vem de fora, então nada é assumido: string, fração, negativo, `NaN` ou
+ * ausente viram o padrão, e o teto é `TEAM_SIZE` — não existe caminho para
+ * criar sala com mais bots do que cabe no time.
+ */
+function sanitizeBots(raw: unknown): number {
+    const n = Math.floor(Number(raw));
+    if (!Number.isFinite(n)) return TEAM_SIZE;
+    return Math.min(TEAM_SIZE, Math.max(0, n));
 }
 
 /** Nomes vem do cliente: corta tamanho e caracteres de controle. */
