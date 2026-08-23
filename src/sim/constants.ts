@@ -442,6 +442,24 @@ export const BOT_STUCK_MIN_PROGRESS = 24;
  */
 export const BOT_PATHS_PER_TICK = 2;
 
+/**
+ * Quanto tempo o bot anda "de lado" depois de travar.
+ *
+ * Só limpar a rota não resolve quina: o A* devolve praticamente o mesmo
+ * caminho e ele volta a encostar no mesmo canto. Durante esta janela o bot
+ * ignora o waypoint e segue uma tangente, o que o tira do canto pelo movimento
+ * normal — nada de teleporte.
+ */
+export const BOT_UNSTICK_MS = 500;
+
+/**
+ * Ângulo do desvio, em radianos (~70°).
+ *
+ * Perpendicular demais (90°) faz o bot bater na parede lateral do corredor;
+ * pouco (30°) mantém ele raspando a mesma quina.
+ */
+export const BOT_UNSTICK_ANGLE = 1.22;
+
 /** Margem das bordas em que o bot inverte o rumo. */
 export const BOT_EDGE_MARGIN = 100;
 

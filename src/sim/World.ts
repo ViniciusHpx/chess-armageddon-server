@@ -31,6 +31,7 @@ import {
     SPAWN_ATTEMPTS, SPAWN_MIN_DISTANCE, SPAWN_ZONE,
     BOT_PATHS_PER_TICK, BOT_REPATH_MIN_MS, BOT_REPATH_TARGET_MOVE,
     BOT_STUCK_CHECK_MS, BOT_STUCK_MIN_PROGRESS, BOT_WAYPOINT_TOLERANCE,
+    BOT_UNSTICK_ANGLE, BOT_UNSTICK_MS,
     BOT_DASH_COOLDOWN_MS, BOT_DODGE_CHANCE, BOT_DODGE_RANGE_SLACK, BOT_DODGE_REACTION_MS,
     DASH_COOLDOWN_MS, DASH_DISTANCE, DASH_INVULN_MS, DASH_SPEED, DASH_TIMEOUT_MS,
     attackHalfBand, attackReach, knockbackSpeed, XP_PER_KILL,
@@ -518,6 +519,14 @@ export class World {
 
         this.checkStuck(actor);
 
+        // Saindo de um canto: anda na tangente por um instante, ignorando o
+        // waypoint. Sem isto o caminho recalculado aponta para o mesmo lugar e
+        // ele volta a encostar na mesma quina.
+        if (this.now < actor.unstickUntil) {
+            const base = angleBetween(de.x, de.y, para.x, para.y);
+            return base + actor.unstickSide * BOT_UNSTICK_ANGLE;
+        }
+
         if (this.nav.hasLineOfSight(de.x, de.y, para.x, para.y, actor.collisionRx, actor.collisionRy)) {
             actor.clearPath();
             return angleBetween(de.x, de.y, para.x, para.y);
@@ -610,6 +619,10 @@ export class World {
 
         actor.clearPath();
         actor.pathAt = 0; // libera o recálculo já no próximo passo
+
+        // Contorna pelo lado oposto ao da última tentativa.
+        actor.unstickSide = -actor.unstickSide;
+        actor.unstickUntil = this.now + BOT_UNSTICK_MS;
     }
 
     /**

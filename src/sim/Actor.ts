@@ -167,6 +167,15 @@ export class Actor {
     progressY = 0;
     progressAt = 0;
 
+    /**
+     * Até quando o bot está saindo de um canto (`World.now`), e para que lado.
+     *
+     * O lado alterna a cada travada: se contornar por um lado não resolveu, a
+     * tentativa seguinte vai pelo outro, em vez de insistir no mesmo.
+     */
+    unstickUntil = 0;
+    unstickSide = 1;
+
     // --- IA (bots) ---
     wanderAngle = Math.random() * Math.PI * 2;
     wanderTimer = 0;

@@ -119,19 +119,61 @@ export class CollisionMask {
     /**
      * O personagem cabe com o centro da elipse aqui?
      *
-     * Cinco pontos (centro e as quatro pontas), com os raios a 70% — idêntico
-     * ao `isPositionWalkable` do offline. Testar só o centro deixaria metade do
-     * corpo entrar na parede; testar a elipse inteira exigiria varrer pixels a
-     * cada tick para ganhar pouco.
+     * Nove pontos: o centro, as quatro pontas e as quatro diagonais, todos a
+     * 70% dos raios. As diagonais são o que faltava — com só as pontas, uma
+     * quina entra pelo vão entre elas e o "ombro" do corpo termina dentro da
+     * parede:
+     *
+     *     ponta ──┐        │####      o centro e as pontas passam,
+     *             ●        │####      mas o canto (X) está na parede
+     *        ●  ● ● ●  X ──┘####
+     *             ●
+     *
+     * Continua sendo amostragem, não a elipse inteira: varrer o contorno todo
+     * a cada movimento custaria muito mais para ganhar pouco. Os raios a 70%
+     * (e não 100%) seguem perdoando resvalos, como antes.
      */
     canStand(cx: number, cy: number, rx: number, ry: number): boolean {
         const dx = rx * 0.7;
         const dy = ry * 0.7;
+        // Ponto da diagonal sobre a mesma elipse: cos45 = sen45 ≈ 0,7071.
+        const ix = dx * 0.7071;
+        const iy = dy * 0.7071;
+
         return this.isWalkable(cx, cy)
             && this.isWalkable(cx + dx, cy)
             && this.isWalkable(cx - dx, cy)
             && this.isWalkable(cx, cy + dy)
-            && this.isWalkable(cx, cy - dy);
+            && this.isWalkable(cx, cy - dy)
+            && this.isWalkable(cx + ix, cy + iy)
+            && this.isWalkable(cx + ix, cy - iy)
+            && this.isWalkable(cx - ix, cy + iy)
+            && this.isWalkable(cx - ix, cy - iy);
+    }
+
+    /**
+     * Maior fração do deslocamento que ainda cabe, de 0 a 1.
+     *
+     * Bisseção com poucas iterações: o passo de um tick tem no máximo ~15 px,
+     * então 4 cortes já param a menos de 1 px da parede. É o que faz o
+     * personagem ENCOSTAR no obstáculo em vez de parar a um passo dele — sem
+     * isso ele fica "flutuando" longe da parede e, no caso do bot, empurrando
+     * o vazio sem progredir.
+     */
+    private maxAlong(
+        x: number, y: number, dx: number, dy: number,
+        offsetY: number, rx: number, ry: number,
+    ): number {
+        if (this.canStand(x + dx, y + dy + offsetY, rx, ry)) return 1;
+
+        let baixo = 0;
+        let alto = 1;
+        for (let i = 0; i < 4; i++) {
+            const meio = (baixo + alto) / 2;
+            if (this.canStand(x + dx * meio, y + dy * meio + offsetY, rx, ry)) baixo = meio;
+            else alto = meio;
+        }
+        return baixo;
     }
 
     /**
@@ -148,14 +190,69 @@ export class CollisionMask {
      *
      * @param offsetY Distância de `y` até o centro da elipse (constante do rank).
      */
+    /**
+     * Ponto livre mais próximo, em espiral curta.
+     *
+     * Rede de resgate para quando a posição de PARTIDA já é inválida — o
+     * personagem foi espremido contra a muralha pela separação entre
+     * personagens, pelo empurrão de um golpe ou pelo clamp da borda. Sem isto a
+     * bisseção de `resolveMove` parte de um ponto ruim e "desliza" dentro da
+     * parede, e o personagem fica preso ali para sempre.
+     *
+     * Não é o modo normal de mover: é um empurrão de poucos pixels, e só
+     * acontece quando o estado já estava quebrado.
+     */
+    nearestFree(
+        x: number, y: number, offsetY: number, rx: number, ry: number,
+    ): { x: number; y: number } | undefined {
+        for (let raio = 8; raio <= 96; raio += 8) {
+            for (let i = 0; i < 8; i++) {
+                const ang = (i / 8) * Math.PI * 2;
+                const px = x + Math.cos(ang) * raio;
+                const py = y + Math.sin(ang) * raio;
+                if (this.canStand(px, py + offsetY, rx, ry)) return { x: px, y: py };
+            }
+        }
+        return undefined;
+    }
+
     resolveMove(
         prevX: number, prevY: number,
         nextX: number, nextY: number,
         offsetY: number, rx: number, ry: number,
     ): { x: number; y: number } {
+        // Partida inválida: primeiro sai da parede, senão a bisseção abaixo
+        // "anda" dentro dela.
+        if (!this.canStand(prevX, prevY + offsetY, rx, ry)) {
+            const saida = this.nearestFree(prevX, prevY, offsetY, rx, ry);
+            if (saida) return saida;
+            return { x: prevX, y: prevY };
+        }
+
+        const dx = nextX - prevX;
+        const dy = nextY - prevY;
+
+        // Caminho livre: nada a resolver (o caso esmagadoramente mais comum).
         if (this.canStand(nextX, nextY + offsetY, rx, ry)) return { x: nextX, y: nextY };
-        if (this.canStand(nextX, prevY + offsetY, rx, ry)) return { x: nextX, y: prevY };
-        if (this.canStand(prevX, nextY + offsetY, rx, ry)) return { x: prevX, y: nextY };
-        return { x: prevX, y: prevY };
+
+        // Bateu. Três candidatos: seguir na diagonal até onde couber, deslizar
+        // em X ou deslizar em Y — cada um levado até encostar. Vence o que
+        // rende mais deslocamento, então uma parede inclinada não trava o
+        // movimento e uma quina não vira parada seca.
+        const tDiag = (dx !== 0 && dy !== 0)
+            ? this.maxAlong(prevX, prevY, dx, dy, offsetY, rx, ry)
+            : 0;
+        const tX = dx !== 0 ? this.maxAlong(prevX, prevY, dx, 0, offsetY, rx, ry) : 0;
+        const tY = dy !== 0 ? this.maxAlong(prevX, prevY, 0, dy, offsetY, rx, ry) : 0;
+
+        const avancoDiag = tDiag * Math.hypot(dx, dy);
+        const avancoX = tX * Math.abs(dx);
+        const avancoY = tY * Math.abs(dy);
+
+        if (avancoDiag >= avancoX && avancoDiag >= avancoY) {
+            return { x: prevX + dx * tDiag, y: prevY + dy * tDiag };
+        }
+        if (avancoX >= avancoY) return { x: prevX + dx * tX, y: prevY };
+        return { x: prevX, y: prevY + dy * tY };
     }
 }

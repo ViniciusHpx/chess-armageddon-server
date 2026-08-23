@@ -9,7 +9,7 @@ import {
     ATTACK_WINDUP_MAX_MS, ATTACK_RECOVERY_MAX_MS, chargeDamage, chargeAreaMult,
     XP_PER_KILL, XP_PER_LEVEL, MAX_LEVEL, levelFromXp, xpProgress,
     WORLD_WIDTH, WORLD_HEIGHT, HALF_WORLD_WIDTH, SPAWN_ZONE, SPAWN_MIN_DISTANCE,
-    BOT_STUCK_CHECK_MS, TEAM_SIZE,
+    BOT_STUCK_CHECK_MS, TEAM_SIZE, BOT_UNSTICK_MS,
     DAMAGE_LIGHT, DAMAGE_MAX, AREA_MULT_LIGHT, AREA_MULT_MAX, KNOCKBACK_CHARGED_FACTOR,
     attackWindupMs, attackRecoveryMs, chargePower,
 } from "../src/sim/constants.js";
@@ -1090,5 +1090,158 @@ describe("World (simulação)", () => {
         // Antes da navegação isto dava ~14 px no total: eles empurravam a
         // muralha sem sair do lugar.
         assert.ok(andou > 2000, `os bots mal se moveram (${andou.toFixed(0)} px somados)`);
+    });
+
+    // -----------------------------------------------------------------------
+    // QUINAS, CANTOS E RECUPERAÇÃO
+    // -----------------------------------------------------------------------
+
+    it("nenhuma posição aceita deixa parte do corpo dentro da parede", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        const mask = world.mask;
+
+        // Varre o mapa empurrando em oito direções a partir de vários pontos do
+        // castelo; toda posição aceita tem de passar no teste de nove pontos.
+        const direcoes = [
+            [1, 0], [-1, 0], [0, 1], [0, -1],
+            [0.7071, 0.7071], [-0.7071, 0.7071], [0.7071, -0.7071], [-0.7071, -0.7071],
+        ] as const;
+
+        let seq = 1;
+        for (const [dx, dy] of direcoes) {
+            actor.teleport(400, 800);
+            for (let i = 0; i < 200; i++) {
+                world.setInput(actor, dx, dy, seq++);
+                world.tick(TICK_MS);
+
+                const c = actor.ellipseCenter();
+                assert.ok(
+                    mask.canStand(c.x, c.y, actor.collisionRx, actor.collisionRy),
+                    `corpo dentro da parede em (${actor.x.toFixed(0)}, ${actor.y.toFixed(0)}) ` +
+                    `indo para (${dx}, ${dy})`,
+                );
+            }
+        }
+    });
+
+    it("quem anda contra a parede encosta nela, não para a um passo", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        actor.teleport(400, 800);
+
+        // Empurra para o oeste até parar de progredir.
+        let seq = 1;
+        for (let i = 0; i < 200; i++) {
+            world.setInput(actor, -1, 0, seq++);
+            world.tick(TICK_MS);
+        }
+        const parouEm = actor.x;
+
+        // A parede está logo à frente: um passo além já não caberia.
+        const c = actor.ellipseCenter();
+        assert.ok(
+            !world.mask.canStand(c.x - 2, c.y, actor.collisionRx, actor.collisionRy),
+            `parou a mais de 2 px da parede (x=${parouEm.toFixed(1)})`,
+        );
+    });
+
+    it("parede inclinada não trava o movimento: o personagem desliza", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+
+        // A muralha do castelo desce na diagonal; empurrar contra ela tem de
+        // render deslocamento ao longo dela, não parada seca.
+        actor.teleport(300, 1300);
+        const y0 = actor.y;
+
+        let seq = 1;
+        for (let i = 0; i < 60; i++) {
+            world.setInput(actor, -1, 1, seq++);
+            world.tick(TICK_MS);
+        }
+
+        assert.ok(
+            Math.abs(actor.y - y0) > 40,
+            `mal deslizou pela muralha (y foi de ${y0.toFixed(0)} para ${actor.y.toFixed(0)})`,
+        );
+    });
+
+    it("quem for espremido para dentro da parede sai sozinho", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+
+        // Encosta na muralha e empurra alguns pixels para dentro — é o que a
+        // separação entre personagens e o empurrão de um golpe produzem na
+        // prática (ninguém aparece 200 px dentro da pedra).
+        actor.teleport(400, 800);
+        while (world.mask.canStand(
+            actor.ellipseCenter().x, actor.ellipseCenter().y,
+            actor.collisionRx, actor.collisionRy,
+        )) {
+            actor.teleport(actor.x - 8, actor.y);
+        }
+        assert.ok(
+            !world.mask.canStand(actor.ellipseCenter().x, actor.ellipseCenter().y,
+                actor.collisionRx, actor.collisionRy),
+            "o teste precisa começar com o personagem realmente dentro da parede",
+        );
+
+        for (let i = 0; i < 20; i++) {
+            world.setInput(actor, 1, 0, i + 1);
+            world.tick(TICK_MS);
+        }
+
+        const c = actor.ellipseCenter();
+        assert.ok(
+            world.mask.canStand(c.x, c.y, actor.collisionRx, actor.collisionRy),
+            `continuou dentro da parede em (${actor.x.toFixed(0)}, ${actor.y.toFixed(0)})`,
+        );
+    });
+
+    it("bot travado tenta o outro lado na travada seguinte", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const alvo = world.addPlayer("p", "enemy", "Alvo");
+        alvo.invulnUntil = Number.MAX_SAFE_INTEGER;
+        bot.teleport(1150, 480);
+        alvo.teleport(1600, 480);
+
+        const travar = () => {
+            bot.progressX = bot.x;
+            bot.progressY = bot.y;
+            bot.progressAt = world.now - BOT_STUCK_CHECK_MS - 1;
+            world.tick(TICK_MS);
+        };
+
+        travar();
+        const primeiroLado = bot.unstickSide;
+        assert.ok(bot.unstickUntil > world.now, "devia estar contornando");
+
+        bot.unstickUntil = 0;
+        travar();
+        assert.strictEqual(
+            bot.unstickSide, -primeiroLado,
+            "insistir no mesmo lado repetiria a mesma travada",
+        );
+    });
+
+    it("bot preso num canto do castelo se solta e volta a andar", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const alvo = world.addPlayer("p", "enemy", "Alvo");
+        alvo.invulnUntil = Number.MAX_SAFE_INTEGER;
+
+        // Encaixa o bot no canto inferior esquerdo do pátio, com o alvo do
+        // outro lado do mapa: em linha reta ele encosta na muralha.
+        bot.teleport(200, 1400);
+        alvo.teleport(4600, 900);
+
+        const inicio = { x: bot.x, y: bot.y };
+        for (let i = 0; i < 600; i++) world.tick(TICK_MS);
+
+        const andou = Math.hypot(bot.x - inicio.x, bot.y - inicio.y);
+        assert.ok(andou > 300, `o bot saiu só ${andou.toFixed(0)} px do canto`);
+        assert.ok(BOT_UNSTICK_MS > 0);
     });
 });
