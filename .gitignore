@@ -2,3 +2,6 @@ node_modules
 build
 .colyseus-cloud.json
 .devmode.json
+
+# cópia gerada pelo build a partir do asset do cliente
+assets/collision.png

@@ -25,6 +25,16 @@ export class Actor {
 
     x = 0;
     y = 0;
+
+    /**
+     * Última posição em que o personagem cabia sem encostar em parede.
+     *
+     * Serve de rede quando a separação entre personagens ou o clamp da borda
+     * empurram alguém para dentro do cenário: em vez de aceitar a posição
+     * inválida, o `World` devolve para cá.
+     */
+    lastValidX = 0;
+    lastValidY = 0;
     vx = 0;
     vy = 0;
     flipX = false;
@@ -182,6 +192,20 @@ export class Actor {
             x: this.x,
             y: this.y + this.rank.size.height / 2 - this.collisionRx + (this.collisionRy * 4) / 3,
         };
+    }
+
+    /**
+     * Coloca o personagem numa posição e a assume como válida.
+     *
+     * Escrever `x`/`y` na mão deixa `lastValid*` para trás, e no tick seguinte
+     * o `World` devolveria o personagem para a posição antiga ao ver que a
+     * nova encosta em parede. Spawn, respawn e testes usam isto.
+     */
+    teleport(x: number, y: number): void {
+        this.x = x;
+        this.y = y;
+        this.lastValidX = x;
+        this.lastValidY = y;
     }
 
     setRank(key: RankKey): void {

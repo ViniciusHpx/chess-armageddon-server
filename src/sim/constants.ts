@@ -153,9 +153,41 @@ export const AURA_KILL_VALUES: Record<string, number> = {
 // MUNDO E COMBATE
 // ---------------------------------------------------------------------------
 
-/** Dimensões do mapa (assets/map_3548_1774.png). */
-export const WORLD_WIDTH = 3548;
-export const WORLD_HEIGHT = 1774;
+/**
+ * Dimensões do mapa. Espelha `chess-armageddon/src/constants/Scenario.js`.
+ *
+ * Os assets (`arena.png`, `collision.png`) são a METADE esquerda, 2496x1684; o
+ * mundo é essa metade mais o espelho dela. Por isso `WORLD_WIDTH` é o dobro de
+ * `HALF_WORLD_WIDTH`, e tanto o desenho quanto a máscara de colisão dobram o X
+ * pela mesma conta.
+ */
+export const HALF_WORLD_WIDTH = 2496;
+export const WORLD_WIDTH = HALF_WORLD_WIDTH * 2;
+export const WORLD_HEIGHT = 1684;
+
+/**
+ * Área de nascimento de cada time, dentro do próprio castelo.
+ *
+ * São retângulos GENEROSOS de propósito: o pátio tem construções internas, e
+ * quem garante que ninguém nasce em cima delas é a máscara de colisão
+ * (`World.placeAtSpawn` sorteia dentro daqui e valida). Retângulo apertado o
+ * bastante para caber só em chão livre seria mais frágil e mais difícil de
+ * ajustar quando a arte mudar.
+ *
+ * O time `enemy` é o espelho em X — como o mapa inteiro.
+ */
+export const SPAWN_ZONE = {
+    minX: 150,
+    maxX: 900,
+    minY: 560,
+    maxY: 1400,
+} as const;
+
+/** Tentativas de sorteio antes de desistir e usar o fallback do castelo. */
+export const SPAWN_ATTEMPTS = 40;
+
+/** Distância mínima entre dois personagens recém-nascidos, em px. */
+export const SPAWN_MIN_DISTANCE = 120;
 
 /** Intervalo da simulação, em ms. 20 ticks/s. */
 export const TICK_MS = 50;

@@ -8,6 +8,7 @@ import {
     KNOCKBACK_DECAY_MS, knockbackSpeed, BOT_CHARGE_HOLD_MS,
     ATTACK_WINDUP_MAX_MS, ATTACK_RECOVERY_MAX_MS, chargeDamage, chargeAreaMult,
     XP_PER_KILL, XP_PER_LEVEL, MAX_LEVEL, levelFromXp, xpProgress,
+    WORLD_WIDTH, WORLD_HEIGHT, HALF_WORLD_WIDTH, SPAWN_ZONE, SPAWN_MIN_DISTANCE,
     DAMAGE_LIGHT, DAMAGE_MAX, AREA_MULT_LIGHT, AREA_MULT_MAX, KNOCKBACK_CHARGED_FACTOR,
     attackWindupMs, attackRecoveryMs, chargePower,
 } from "../src/sim/constants.js";
@@ -29,11 +30,17 @@ function comSorteioCerto<T>(fn: () => T): T {
 }
 
 /** Distância em X entre os centros das elipses de duas peças. */
+/**
+ * Posições de teste ficam no pátio do castelo aliado: com a máscara de colisão
+ * ativa, uma coordenada qualquer pode cair em cima de muralha e o `World`
+ * devolveria o personagem para a última posição válida no primeiro tick.
+ */
+const LIVRE_X = 400;
+const LIVRE_Y = 800;
+
 function afasta(bot: Actor, target: Actor, distancia: number): void {
-    bot.x = 1200;
-    bot.y = 900;
-    target.x = bot.x + distancia;
-    target.y = 900;
+    bot.teleport(LIVRE_X, LIVRE_Y);
+    target.teleport(LIVRE_X + distancia, LIVRE_Y);
     target.invulnUntil = 0;
 }
 
@@ -49,11 +56,9 @@ function advance(world: World, ms: number): void {
  * abaixo de collisionRx * 2 = 100 px.
  */
 function placeSideBySide(attacker: Actor, target: Actor): void {
-    attacker.x = 1000;
-    attacker.y = 900;
+    attacker.teleport(LIVRE_X, LIVRE_Y);
     attacker.flipX = false; // virado para a direita
-    target.x = 1110;
-    target.y = 900;
+    target.teleport(LIVRE_X + 110, LIVRE_Y);
 }
 
 /** Um golpe simples: carrega e solta no mesmo instante. */
@@ -197,8 +202,8 @@ describe("World (simulação)", () => {
         const a = world.addPlayer("a", "ally", "A");
         const b = world.addPlayer("b", "enemy", "B");
 
-        a.x = 1000; a.y = 900;
-        b.x = 1005; b.y = 902;
+        a.teleport(LIVRE_X, LIVRE_Y);
+        b.teleport(LIVRE_X + 5, LIVRE_Y + 2);
 
         advance(world, 500);
 
@@ -217,12 +222,11 @@ describe("World (simulação)", () => {
     it("para de andar se o cliente emudecer", () => {
         const world = new World();
         const actor = world.addPlayer("a", "ally", "A");
-        actor.x = 1000;
-        actor.y = 900;
+        actor.teleport(LIVRE_X, LIVRE_Y);
 
         world.setInput(actor, 1, 0, 1);
         advance(world, 500);
-        const andouCedo = actor.x - 1000;
+        const andouCedo = actor.x - LIVRE_X;
         assert.ok(andouCedo > 0, "deveria estar andando enquanto a entrada é recente");
 
         // Nenhum pacote novo: passado INPUT_TIMEOUT_MS o servidor solta o comando.
@@ -276,7 +280,7 @@ describe("World (simulação)", () => {
         placeSideBySide(bot, target);
 
         // Bem além do alcance: não deve sair golpe nenhum.
-        target.x = bot.x + 900;
+        target.teleport(bot.x + 900, bot.y);
         advance(world, 3000);
         assert.strictEqual(bot.attacking, false, "não ataca alvo fora de alcance");
         assert.strictEqual(target.currentHealth, RANKS.PAWN.health);
@@ -397,14 +401,12 @@ describe("World (simulação)", () => {
         const world = new World();
         const attacker = world.addPlayer("a", "ally", "A");
         attacker.rankKey = "QUEEN"; // golpe circular, pega em volta
-        attacker.x = 1500;
-        attacker.y = 900;
+        attacker.teleport(LIVRE_X, LIVRE_Y);
 
         // Um acima, um na linha e um abaixo, todos ao alcance do círculo.
         const alvos = ["b", "c", "d"].map((id, i) => {
             const t = world.addPlayer(id, "enemy", id.toUpperCase());
-            t.x = 1580;
-            t.y = 830 + i * 70;
+            t.teleport(LIVRE_X + 80, LIVRE_Y - 70 + i * 70);
             return t;
         });
         const antes = alvos.map((t) => ({ x: t.x, y: t.y }));
@@ -556,10 +558,8 @@ describe("World (simulação)", () => {
             // Alvo some no horizonte durante toda a carga e a espera.
             const passos = (RANKS.PAWN.chargeTime + BOT_CHARGE_HOLD_MS + TICK_MS * 4) / TICK_MS;
             for (let i = 0; i < passos; i++) {
-                bot.x = 1200;
-                bot.y = 900;
-                target.x = 3000;
-                target.y = 900;
+                bot.teleport(LIVRE_X, LIVRE_Y);
+                target.teleport(LIVRE_X + 1800, LIVRE_Y);
                 world.tick(TICK_MS);
             }
         });
@@ -570,8 +570,7 @@ describe("World (simulação)", () => {
     it("o personagem não sai do mapa", () => {
         const world = new World();
         const actor = world.addPlayer("a", "ally", "A");
-        actor.x = 300;
-        actor.y = 300;
+        actor.teleport(LIVRE_X, LIVRE_Y);
 
         world.setInput(actor, -1, -1, 1);
         advance(world, 5000);
@@ -823,5 +822,160 @@ describe("World (simulação)", () => {
         peao.resetProgressOnDeath();
         assert.strictEqual(peao.xp, 0);
         assert.strictEqual(peao.rankKey, "PAWN");
+    });
+
+    // -----------------------------------------------------------------------
+    // MAPA, SPAWN E COLISÃO COM O CENÁRIO
+    // -----------------------------------------------------------------------
+
+    it("o mundo tem 4992x1684 e é a metade espelhada", () => {
+        assert.strictEqual(WORLD_WIDTH, 4992);
+        assert.strictEqual(WORLD_HEIGHT, 1684);
+        assert.strictEqual(HALF_WORLD_WIDTH * 2, WORLD_WIDTH);
+    });
+
+    it("a máscara espelha a metade direita e trata fora do mapa como parede", () => {
+        const world = new World();
+        const mask = world.mask;
+
+        for (const [x, y] of [[400, 800], [1200, 700], [200, 1200]] as const) {
+            assert.strictEqual(
+                mask.isWalkable(x, y),
+                mask.isWalkable(WORLD_WIDTH - 1 - x, y),
+                `o pixel (${x},${y}) e o espelho dele têm de concordar`,
+            );
+        }
+
+        assert.strictEqual(mask.isWalkable(-1, 100), false);
+        assert.strictEqual(mask.isWalkable(100, -1), false);
+        assert.strictEqual(mask.isWalkable(WORLD_WIDTH, 100), false);
+        assert.strictEqual(mask.isWalkable(100, WORLD_HEIGHT), false);
+    });
+
+    it("todo mundo nasce no castelo do próprio time, em chão livre", () => {
+        const world = new World();
+
+        for (let i = 0; i < 20; i++) {
+            const ally = world.addBot("ally");
+            const enemy = world.addBot("enemy");
+
+            for (const [actor, esquerda] of [[ally, true], [enemy, false]] as const) {
+                assert.ok(
+                    actor.x > 0 && actor.x < WORLD_WIDTH && actor.y > 0 && actor.y < WORLD_HEIGHT,
+                    "dentro do mapa",
+                );
+                assert.ok(
+                    esquerda ? actor.x < HALF_WORLD_WIDTH : actor.x > HALF_WORLD_WIDTH,
+                    `${actor.team} nasceu no lado errado (x=${actor.x})`,
+                );
+
+                const dentroX = esquerda
+                    ? actor.x >= SPAWN_ZONE.minX && actor.x <= SPAWN_ZONE.maxX
+                    : actor.x >= WORLD_WIDTH - SPAWN_ZONE.maxX && actor.x <= WORLD_WIDTH - SPAWN_ZONE.minX;
+                assert.ok(dentroX, `fora da zona do castelo (x=${actor.x})`);
+                assert.ok(
+                    actor.y >= SPAWN_ZONE.minY && actor.y <= SPAWN_ZONE.maxY,
+                    `fora da zona do castelo (y=${actor.y})`,
+                );
+
+                const centro = actor.ellipseCenter();
+                assert.ok(
+                    world.mask.canStand(centro.x, centro.y, actor.collisionRx, actor.collisionRy),
+                    `nasceu em cima de parede (${actor.x}, ${actor.y})`,
+                );
+            }
+        }
+    });
+
+    it("spawns seguidos não empilham personagens no mesmo ponto", () => {
+        const world = new World();
+        const atores = [];
+        for (let i = 0; i < 5; i++) atores.push(world.addBot("ally"));
+
+        for (let i = 0; i < atores.length; i++) {
+            for (let j = i + 1; j < atores.length; j++) {
+                const d = Math.hypot(atores[i].x - atores[j].x, atores[i].y - atores[j].y);
+                assert.ok(d >= SPAWN_MIN_DISTANCE, `dois bots nasceram a ${d.toFixed(0)}px`);
+            }
+        }
+    });
+
+    it("não atravessa parede andando de frente", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+
+        // Empurra contra a muralha por tempo de sobra.
+        for (let i = 0; i < 200; i++) {
+            world.setInput(actor, -1, 0, i + 1);
+            world.tick(TICK_MS);
+        }
+
+        const centro = actor.ellipseCenter();
+        assert.ok(
+            world.mask.canStand(centro.x, centro.y, actor.collisionRx, actor.collisionRy),
+            `terminou dentro de parede em (${actor.x.toFixed(0)}, ${actor.y.toFixed(0)})`,
+        );
+        assert.ok(actor.x > 0, "não pode vazar pela borda esquerda");
+    });
+
+    it("nenhuma direção, nem diagonal, atravessa o cenário", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+
+        const direcoes = [
+            [1, 0], [-1, 0], [0, 1], [0, -1],
+            [0.7071, 0.7071], [-0.7071, 0.7071], [0.7071, -0.7071], [-0.7071, -0.7071],
+        ] as const;
+
+        let seq = 1;
+        for (const [dx, dy] of direcoes) {
+            for (let i = 0; i < 120; i++) {
+                world.setInput(actor, dx, dy, seq++);
+                world.tick(TICK_MS);
+
+                const c = actor.ellipseCenter();
+                assert.ok(
+                    world.mask.canStand(c.x, c.y, actor.collisionRx, actor.collisionRy),
+                    `direção (${dx},${dy}) colocou o personagem dentro de parede ` +
+                    `em (${actor.x.toFixed(0)}, ${actor.y.toFixed(0)})`,
+                );
+            }
+        }
+    });
+
+    it("o deslocamento por tick nunca passa da velocidade do rank", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+
+        // Entrada absurda: o World normaliza, então o passo continua limitado.
+        world.setInput(actor, 9999, 9999, 1);
+
+        const teto = (actor.rank.speed * TICK_MS) / 1000 + 1;
+        for (let i = 0; i < 40; i++) {
+            const x0 = actor.x;
+            const y0 = actor.y;
+            world.tick(TICK_MS);
+            const andou = Math.hypot(actor.x - x0, actor.y - y0);
+            assert.ok(andou <= teto, `andou ${andou.toFixed(1)}px num tick (teto ${teto.toFixed(1)})`);
+        }
+    });
+
+    it("vários personagens empurrando a mesma parede continuam do lado de fora", () => {
+        const world = new World();
+        const atores = [];
+        for (let i = 0; i < 6; i++) atores.push(world.addPlayer(`p${i}`, "ally", `P${i}`));
+
+        for (let t = 0; t < 120; t++) {
+            for (const a of atores) world.setInput(a, -1, 0.3, t + 1);
+            world.tick(TICK_MS);
+        }
+
+        for (const a of atores) {
+            const c = a.ellipseCenter();
+            assert.ok(
+                world.mask.canStand(c.x, c.y, a.collisionRx, a.collisionRy),
+                `${a.name} acabou dentro de parede em (${a.x.toFixed(0)}, ${a.y.toFixed(0)})`,
+            );
+        }
     });
 });

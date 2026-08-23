@@ -15,6 +15,7 @@
  * início do ataque, respawn por zona de time e alvo definido pelo time real.
  */
 import { Actor } from "./Actor.js";
+import { CollisionMask } from "./CollisionMask.js";
 import { resolveCollisions } from "./CollisionResolver.js";
 import {
     rectangleOverlapsEllipse, circleOverlapsEllipse, diamondOverlapsEllipse, Rect,
@@ -26,6 +27,7 @@ import {
     BOT_SPEED_FACTOR, DAMAGE_CHARGED, DAMAGE_NORMAL, HUMAN_RESPAWN_DELAY_MS,
     INPUT_TIMEOUT_MS, KNOCKBACK_DECAY_MS, KNOCKBACK_MIN_SPEED,
     BOT_CHARGE_HOLD_MS, RESPAWN_INVULN_MS, Team, WORLD_HEIGHT, WORLD_WIDTH,
+    SPAWN_ATTEMPTS, SPAWN_MIN_DISTANCE, SPAWN_ZONE,
     BOT_DASH_COOLDOWN_MS, BOT_DODGE_CHANCE, BOT_DODGE_RANGE_SLACK, BOT_DODGE_REACTION_MS,
     DASH_COOLDOWN_MS, DASH_DISTANCE, DASH_INVULN_MS, DASH_SPEED, DASH_TIMEOUT_MS,
     attackHalfBand, attackReach, knockbackSpeed, XP_PER_KILL,
@@ -38,11 +40,27 @@ export interface KillEvent {
     victimId: string;
 }
 
+/**
+ * Máscara compartilhada por todas as salas.
+ *
+ * O PNG é decodificado uma vez no primeiro `new World()` e reaproveitado: são
+ * ~512 KB para o processo inteiro, não por sala nem por jogador.
+ */
+let mascaraCompartilhada: CollisionMask | undefined;
+
 export class World {
     readonly actors = new Map<string, Actor>();
 
+    /** Colisão com o cenário. Mesma imagem e mesma regra do modo offline. */
+    readonly mask: CollisionMask;
+
     /** Relógio da sala em ms. Só avança dentro de `tick`. */
     now = 0;
+
+    constructor() {
+        if (!mascaraCompartilhada) mascaraCompartilhada = CollisionMask.load();
+        this.mask = mascaraCompartilhada;
+    }
 
     /** Mortes ocorridas no tick corrente; a sala consome e limpa. */
     kills: KillEvent[] = [];
@@ -98,14 +116,80 @@ export class World {
      * mapa inteiro; com times de verdade isso fazia o jogador renascer dentro
      * do inimigo.
      */
-    private placeAtSpawn(actor: Actor): void {
-        const margin = 200;
-        const minX = actor.team === "ally" ? margin : Math.round(WORLD_WIDTH * 0.7);
-        const maxX = actor.team === "ally" ? Math.round(WORLD_WIDTH * 0.3) : WORLD_WIDTH - margin;
+    /** O personagem cabe nesta posição, considerando a elipse dele? */
+    private canStand(actor: Actor, x: number, y: number): boolean {
+        const centroY = y + actor.rank.size.height / 2 - actor.collisionRx + (actor.collisionRy * 4) / 3;
+        return this.mask.canStand(x, centroY, actor.collisionRx, actor.collisionRy);
+    }
 
-        actor.x = randInt(minX, maxX);
-        actor.y = randInt(margin, WORLD_HEIGHT - margin);
-        actor.clampToWorld();
+    /**
+     * Move o ator para o destino, deslizando na parede quando preciso.
+     *
+     * O deslize (só X, depois só Y) é o mesmo do offline, e é ele que impede a
+     * travessia na diagonal: o destino diagonal é testado como um ponto único,
+     * então uma quina nunca vira passagem.
+     */
+    private moveWithCollision(actor: Actor, destinoX: number, destinoY: number): void {
+        const offsetY = actor.rank.size.height / 2 - actor.collisionRx + (actor.collisionRy * 4) / 3;
+        const destino = this.mask.resolveMove(
+            actor.x, actor.y, destinoX, destinoY,
+            offsetY, actor.collisionRx, actor.collisionRy,
+        );
+
+        actor.x = destino.x;
+        actor.y = destino.y;
+    }
+
+    /**
+     * Coloca o personagem no castelo do PRÓPRIO time.
+     *
+     * Sorteia dentro da zona (espelhada para o time `enemy`, como o mapa) e só
+     * aceita a posição se ela passar por três testes: dentro do mapa, fora de
+     * parede e longe de quem já está lá. É rejection sampling com teto de
+     * tentativas — simples, sem varrer o mapa e sem loop infinito quando o
+     * castelo estiver lotado.
+     *
+     * Esgotadas as tentativas, relaxa só a exigência de distância (a última
+     * posição livre encontrada); nunca aceita parede nem fora do mapa.
+     */
+    private placeAtSpawn(actor: Actor): void {
+        const espelhar = actor.team === "enemy";
+        let reserva: { x: number; y: number } | undefined;
+
+        for (let i = 0; i < SPAWN_ATTEMPTS; i++) {
+            const bruteX = randInt(SPAWN_ZONE.minX, SPAWN_ZONE.maxX);
+            const x = espelhar ? WORLD_WIDTH - bruteX : bruteX;
+            const y = randInt(SPAWN_ZONE.minY, SPAWN_ZONE.maxY);
+
+            if (!this.canStand(actor, x, y)) continue;
+
+            reserva = reserva ?? { x, y };
+            if (this.spawnIsCrowded(actor, x, y)) continue;
+
+            actor.teleport(x, y);
+            return;
+        }
+
+        // Ninguém livre E espaçado: aceita o livre mais próximo que apareceu.
+        // Se nem isso houver, o centro da zona serve de último recurso — a
+        // alternativa (deixar em 0,0) colocaria o personagem fora do castelo.
+        const fallback = reserva ?? {
+            x: espelhar
+                ? WORLD_WIDTH - Math.round((SPAWN_ZONE.minX + SPAWN_ZONE.maxX) / 2)
+                : Math.round((SPAWN_ZONE.minX + SPAWN_ZONE.maxX) / 2),
+            y: Math.round((SPAWN_ZONE.minY + SPAWN_ZONE.maxY) / 2),
+        };
+
+        actor.teleport(fallback.x, fallback.y);
+    }
+
+    /** Já tem alguém vivo colado nesta posição? */
+    private spawnIsCrowded(actor: Actor, x: number, y: number): boolean {
+        for (const outro of this.actors.values()) {
+            if (outro === actor || !outro.alive) continue;
+            if (distance(x, y, outro.x, outro.y) < SPAWN_MIN_DISTANCE) return true;
+        }
+        return false;
     }
 
     // -----------------------------------------------------------------------
@@ -242,15 +326,35 @@ export class World {
 
         for (const actor of this.actors.values()) {
             if (!actor.alive) continue;
-            actor.x += (actor.vx + actor.knockbackVx) * dt;
-            actor.y += (actor.vy + actor.knockbackVy) * dt;
+
+            // A posição candidata só vira posição depois de passar pela
+            // máscara: nada de mover primeiro e corrigir depois, que é o que
+            // produziria o solavanco de ida e volta na tela.
+            const destinoX = actor.x + (actor.vx + actor.knockbackVx) * dt;
+            const destinoY = actor.y + (actor.vy + actor.knockbackVy) * dt;
+            this.moveWithCollision(actor, destinoX, destinoY);
+
             this.decayKnockback(actor, deltaMs);
         }
 
         resolveCollisions(this.actors.values());
 
         for (const actor of this.actors.values()) {
-            if (actor.alive) actor.clampToWorld();
+            if (!actor.alive) continue;
+
+            actor.clampToWorld();
+
+            // A separação entre personagens e o clamp da borda podem empurrar
+            // alguém para dentro da parede. Aqui a última posição válida é a
+            // rede de segurança — sem isso dava para prensar um jogador contra
+            // a muralha e passar por ela.
+            if (this.canStand(actor, actor.x, actor.y)) {
+                actor.lastValidX = actor.x;
+                actor.lastValidY = actor.y;
+            } else {
+                actor.x = actor.lastValidX;
+                actor.y = actor.lastValidY;
+            }
         }
 
         // Golpes cujo windup venceu neste tick.
