@@ -40,14 +40,6 @@ export interface KillEvent {
     victimId: string;
 }
 
-/**
- * Máscara compartilhada por todas as salas.
- *
- * O PNG é decodificado uma vez no primeiro `new World()` e reaproveitado: são
- * ~512 KB para o processo inteiro, não por sala nem por jogador.
- */
-let mascaraCompartilhada: CollisionMask | undefined;
-
 export class World {
     readonly actors = new Map<string, Actor>();
 
@@ -58,8 +50,9 @@ export class World {
     now = 0;
 
     constructor() {
-        if (!mascaraCompartilhada) mascaraCompartilhada = CollisionMask.load();
-        this.mask = mascaraCompartilhada;
+        // Já carregada na subida do servidor; aqui é só pegar a instância única
+        // (~512 KB para o processo inteiro, não por sala).
+        this.mask = CollisionMask.load();
     }
 
     /** Mortes ocorridas no tick corrente; a sala consome e limpa. */

@@ -9,6 +9,20 @@ import {
 } from "colyseus";
 
 import { ArenaRoom } from "./rooms/ArenaRoom.js";
+import { CollisionMask } from "./sim/CollisionMask.js";
+
+/**
+ * Carrega a máscara de colisão ANTES de aceitar conexões.
+ *
+ * Antes ela era carregada na primeira `new World()`, ou seja, ao criar a
+ * primeira sala. Faltando o arquivo, o erro estourava dentro do matchmaking: o
+ * `/health` continuava respondendo 200, `POST /matchmake/create/arena` devolvia
+ * 523, e o navegador reportava aquilo como um problema de CORS — porque a
+ * página de erro da borda não traz `Access-Control-Allow-Origin`.
+ *
+ * Carregar aqui transforma isso num erro de subida, com mensagem clara no log.
+ */
+CollisionMask.load();
 
 const server = defineServer({
     rooms: {

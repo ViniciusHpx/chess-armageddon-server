@@ -26,15 +26,17 @@ import { HALF_WORLD_WIDTH, WORLD_HEIGHT, WORLD_WIDTH } from "./constants.js";
 /**
  * Onde procurar o PNG, em ordem.
  *
- * O primeiro é o asset do cliente (fonte única em desenvolvimento); o segundo é
- * a cópia que `npm run build` deixa junto do servidor, para o deploy — que é
- * separado e não enxerga a pasta do cliente. `COLLISION_MASK_PATH` cobre
- * qualquer arranjo diferente sem precisar editar código.
+ * `COLLISION_MASK_PATH` (env) tem prioridade; depois vem a cópia versionada
+ * junto do servidor — a única que existe no deploy — e por fim o asset do
+ * cliente, útil em desenvolvimento se a cópia estiver defasada.
  */
 const CANDIDATOS = [
     process.env.COLLISION_MASK_PATH,
-    "../chess-armageddon/assets/collision.png",
+    // A cópia versionada junto do servidor vem primeiro: é a única que existe
+    // no deploy, onde o repositório do cliente não está presente. Em
+    // desenvolvimento ela é mantida em dia por `npm run sync:mask`.
     "assets/collision.png",
+    "../chess-armageddon/assets/collision.png",
 ];
 
 export class CollisionMask {
@@ -49,14 +51,24 @@ export class CollisionMask {
         this.bits = bits;
     }
 
+    /** Instância única do processo; ver `load()`. */
+    private static cache: CollisionMask | undefined;
+
     /**
-     * Decodifica o PNG e monta o bitset. Chamado uma vez, no boot.
+     * Decodifica o PNG e monta o bitset — uma vez por processo, na subida
+     * (`app.config.ts`). Chamadas seguintes devolvem a mesma instância.
      *
-     * @throws se o arquivo não existir ou não tiver o tamanho esperado — uma
-     *         máscara errada deixaria todo mundo atravessando parede, e falhar
-     *         alto na subida é melhor que descobrir isso em jogo.
+     * @throws se o arquivo não existir ou não tiver o tamanho esperado. Uma
+     *         máscara errada deixaria todo mundo atravessando parede, então é
+     *         melhor o servidor não subir do que subir quebrado — e o log diz
+     *         exatamente onde ele procurou.
      */
     static load(): CollisionMask {
+        if (CollisionMask.cache) return CollisionMask.cache;
+        return (CollisionMask.cache = CollisionMask.decode());
+    }
+
+    private static decode(): CollisionMask {
         const raiz = path.dirname(fileURLToPath(import.meta.url));
         const base = path.resolve(raiz, "../../");
 

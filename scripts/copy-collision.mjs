@@ -1,14 +1,16 @@
 /**
  * Copia a máscara de colisão do cliente para junto do servidor.
  *
- * A fonte única é o asset do cliente (`chess-armageddon/assets/collision.png`):
- * é ele que o jogo desenha e é dele que o modo offline lê a colisão. Em
- * desenvolvimento o servidor lê direto de lá; no deploy os dois projetos vão
- * para hosts diferentes e a pasta do cliente não existe — daí esta cópia, feita
- * no `build`.
+ * A fonte é o asset do cliente (`chess-armageddon/assets/collision.png`): é ele
+ * que o jogo desenha e é dele que o modo offline lê a colisão.
  *
- * Copiar (em vez de manter duas imagens versionadas) é o que garante que as
- * duas pontas usem exatamente os mesmos pixels.
+ * A cópia em `chess-armageddon-server/assets/` é VERSIONADA de propósito (28 KB):
+ * os dois projetos têm deploys separados, e no host do servidor a pasta do
+ * cliente não existe. Deixá-la fora do git foi exatamente o que derrubou a
+ * criação de salas em produção.
+ *
+ * Rode `npm run sync:mask` sempre que a arte de colisão mudar, e commite a
+ * cópia junto.
  */
 import fs from "fs";
 import path from "path";
