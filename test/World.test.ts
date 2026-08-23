@@ -9,6 +9,7 @@ import {
     ATTACK_WINDUP_MAX_MS, ATTACK_RECOVERY_MAX_MS, chargeDamage, chargeAreaMult,
     XP_PER_KILL, XP_PER_LEVEL, MAX_LEVEL, levelFromXp, xpProgress,
     WORLD_WIDTH, WORLD_HEIGHT, HALF_WORLD_WIDTH, SPAWN_ZONE, SPAWN_MIN_DISTANCE,
+    BOT_STUCK_CHECK_MS, TEAM_SIZE,
     DAMAGE_LIGHT, DAMAGE_MAX, AREA_MULT_LIGHT, AREA_MULT_MAX, KNOCKBACK_CHARGED_FACTOR,
     attackWindupMs, attackRecoveryMs, chargePower,
 } from "../src/sim/constants.js";
@@ -977,5 +978,117 @@ describe("World (simulação)", () => {
                 `${a.name} acabou dentro de parede em (${a.x.toFixed(0)}, ${a.y.toFixed(0)})`,
             );
         }
+    });
+
+    // -----------------------------------------------------------------------
+    // NAVEGAÇÃO DOS BOTS
+    // -----------------------------------------------------------------------
+
+    it("o bot contorna o rio pela ponte em vez de encostar na margem", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const alvo = world.addPlayer("p", "enemy", "Alvo");
+
+        // Margens opostas do rio, na mesma altura: em linha reta é impossível.
+        bot.teleport(1150, 480);
+        alvo.teleport(1600, 480);
+        alvo.invulnUntil = Number.MAX_SAFE_INTEGER;
+
+        let cruzou = false;
+        let desceuAteAPonte = false;
+        for (let i = 0; i < 900 && !cruzou; i++) {
+            world.tick(TICK_MS);
+            if (bot.y > 600) desceuAteAPonte = true;
+            if (bot.x > 1500) cruzou = true;
+        }
+
+        assert.ok(desceuAteAPonte, "para achar a ponte ele precisa descer, não empurrar a margem");
+        assert.ok(cruzou, `o bot ficou preso em (${bot.x.toFixed(0)}, ${bot.y.toFixed(0)})`);
+    });
+
+    it("bot com alvo visível vai direto, sem calcular rota", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const alvo = world.addPlayer("p", "enemy", "Alvo");
+
+        // Campo aberto do pátio: linha de visão limpa.
+        bot.teleport(300, 800);
+        alvo.teleport(700, 800);
+        alvo.invulnUntil = Number.MAX_SAFE_INTEGER;
+
+        world.tick(TICK_MS);
+
+        assert.strictEqual(bot.path.length, 0, "com o alvo à vista não se gasta A*");
+        assert.ok(bot.x > 300, "e ele anda na direção do alvo");
+    });
+
+    it("bot travado joga a rota fora e tenta de novo", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const alvo = world.addPlayer("p", "enemy", "Alvo");
+
+        bot.teleport(1150, 480);
+        alvo.teleport(1600, 480);
+        alvo.invulnUntil = Number.MAX_SAFE_INTEGER;
+
+        // Deixa criar uma rota...
+        for (let i = 0; i < 20; i++) world.tick(TICK_MS);
+
+        // ...e finge que ele não saiu do lugar durante a janela de checagem.
+        bot.progressX = bot.x;
+        bot.progressY = bot.y;
+        bot.progressAt = world.now - BOT_STUCK_CHECK_MS - 1;
+        bot.pathAt = world.now;              // rota "fresca", que seria mantida
+        bot.path = [9999, 9999];
+        bot.pathIndex = 0;
+
+        world.tick(TICK_MS);
+
+        assert.notDeepStrictEqual(bot.path, [9999, 9999], "a rota velha tem de ser descartada");
+    });
+
+    it("o custo do tick continua desprezível com o mapa e a navegação", () => {
+        const world = new World();
+        for (let i = 0; i < TEAM_SIZE; i++) {
+            world.addBot("ally");
+            world.addBot("enemy");
+        }
+
+        // Aquece (spawn, primeiras rotas).
+        for (let i = 0; i < 100; i++) world.tick(TICK_MS);
+
+        let pior = 0;
+        for (let i = 0; i < 300; i++) {
+            const t0 = process.hrtime.bigint();
+            world.tick(TICK_MS);
+            pior = Math.max(pior, Number(process.hrtime.bigint() - t0) / 1e6);
+        }
+
+        assert.ok(
+            pior < TICK_MS / 5,
+            `pior tick ${pior.toFixed(2)} ms passou de um quinto do orçamento (${TICK_MS} ms)`,
+        );
+    });
+
+    it("os bots realmente se deslocam pelo mapa", () => {
+        const world = new World();
+        for (let i = 0; i < TEAM_SIZE; i++) {
+            world.addBot("ally");
+            world.addBot("enemy");
+        }
+        for (let i = 0; i < 100; i++) world.tick(TICK_MS);
+
+        const bots = [...world.actors.values()].filter((a) => a.isBot);
+        const antes = bots.map((b) => ({ x: b.x, y: b.y }));
+
+        for (let i = 0; i < 400; i++) world.tick(TICK_MS);
+
+        const andou = bots.reduce(
+            (soma, b, k) => soma + Math.hypot(b.x - antes[k].x, b.y - antes[k].y), 0,
+        );
+
+        // Antes da navegação isto dava ~14 px no total: eles empurravam a
+        // muralha sem sair do lugar.
+        assert.ok(andou > 2000, `os bots mal se moveram (${andou.toFixed(0)} px somados)`);
     });
 });

@@ -16,6 +16,7 @@
  */
 import { Actor } from "./Actor.js";
 import { CollisionMask } from "./CollisionMask.js";
+import { NavGrid } from "./NavGrid.js";
 import { resolveCollisions } from "./CollisionResolver.js";
 import {
     rectangleOverlapsEllipse, circleOverlapsEllipse, diamondOverlapsEllipse, Rect,
@@ -28,6 +29,8 @@ import {
     INPUT_TIMEOUT_MS, KNOCKBACK_DECAY_MS, KNOCKBACK_MIN_SPEED,
     BOT_CHARGE_HOLD_MS, RESPAWN_INVULN_MS, Team, WORLD_HEIGHT, WORLD_WIDTH,
     SPAWN_ATTEMPTS, SPAWN_MIN_DISTANCE, SPAWN_ZONE,
+    BOT_PATHS_PER_TICK, BOT_REPATH_MIN_MS, BOT_REPATH_TARGET_MOVE,
+    BOT_STUCK_CHECK_MS, BOT_STUCK_MIN_PROGRESS, BOT_WAYPOINT_TOLERANCE,
     BOT_DASH_COOLDOWN_MS, BOT_DODGE_CHANCE, BOT_DODGE_RANGE_SLACK, BOT_DODGE_REACTION_MS,
     DASH_COOLDOWN_MS, DASH_DISTANCE, DASH_INVULN_MS, DASH_SPEED, DASH_TIMEOUT_MS,
     attackHalfBand, attackReach, knockbackSpeed, XP_PER_KILL,
@@ -46,6 +49,12 @@ export class World {
     /** Colisão com o cenário. Mesma imagem e mesma regra do modo offline. */
     readonly mask: CollisionMask;
 
+    /** Malha de navegação dos bots, derivada da máscara. */
+    readonly nav: NavGrid;
+
+    /** Buscas de caminho já gastas no tick corrente; ver BOT_PATHS_PER_TICK. */
+    private pathsNesteTick = 0;
+
     /** Relógio da sala em ms. Só avança dentro de `tick`. */
     now = 0;
 
@@ -53,6 +62,7 @@ export class World {
         // Já carregada na subida do servidor; aqui é só pegar a instância única
         // (~512 KB para o processo inteiro, não por sala).
         this.mask = CollisionMask.load();
+        this.nav = NavGrid.shared(this.mask);
     }
 
     /** Mortes ocorridas no tick corrente; a sala consome e limpa. */
@@ -310,6 +320,7 @@ export class World {
     tick(deltaMs: number): void {
         this.now += deltaMs;
         const dt = deltaMs / 1000;
+        this.pathsNesteTick = 0;
 
         for (const actor of this.actors.values()) {
             if (!actor.alive) continue;
@@ -419,7 +430,7 @@ export class World {
         let moveAngle: number;
 
         if (nearest) {
-            moveAngle = angleBetween(actor.x, actor.y, nearest.x, nearest.y);
+            moveAngle = this.navigateAngle(actor, nearest);
         } else {
             actor.wanderTimer -= deltaMs;
             if (actor.wanderTimer <= 0) {
@@ -480,6 +491,125 @@ export class World {
 
         this.beginAttack(actor, 0);
         actor.attackCooldown = BOT_ATTACK_COOLDOWN_MS;
+    }
+
+    // -----------------------------------------------------------------------
+    // NAVEGAÇÃO DOS BOTS
+    //
+    // Decisão (quem perseguir) fica em `stepBot`; aqui é só "como chegar lá", e
+    // o movimento em si continua sendo o mesmo `vx/vy` de sempre — o bot anda
+    // pelo caminho normal, com a mesma colisão e a mesma velocidade.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Ângulo para onde o bot deve andar para alcançar o alvo.
+     *
+     * Três caminhos, do mais barato para o mais caro:
+     *
+     *   1. **linha de visão livre** — vai direto e descarta qualquer rota. É o
+     *      caso comum, e não custa busca nenhuma;
+     *   2. **rota em andamento** — segue o waypoint atual;
+     *   3. **sem rota utilizável** — pede um A*, respeitando o intervalo mínimo
+     *      e a cota de buscas do tick.
+     */
+    private navigateAngle(actor: Actor, target: Actor): number {
+        const de = actor.ellipseCenter();
+        const para = target.ellipseCenter();
+
+        this.checkStuck(actor);
+
+        if (this.nav.hasLineOfSight(de.x, de.y, para.x, para.y, actor.collisionRx, actor.collisionRy)) {
+            actor.clearPath();
+            return angleBetween(de.x, de.y, para.x, para.y);
+        }
+
+        if (this.precisaDeRota(actor, para.x, para.y)) this.tracaRota(actor, de, para);
+
+        const waypoint = this.waypointAtual(actor, de);
+        if (waypoint) return angleBetween(de.x, de.y, waypoint.x, waypoint.y);
+
+        // Sem rota possível (alvo em outra ilha do mapa, ou cota esgotada neste
+        // tick): segue na direção do alvo — a colisão impede o atravessamento e
+        // a próxima checagem de progresso tenta de novo.
+        return angleBetween(de.x, de.y, para.x, para.y);
+    }
+
+    /** A rota atual ainda serve? */
+    private precisaDeRota(actor: Actor, alvoX: number, alvoY: number): boolean {
+        if (this.now - actor.pathAt < BOT_REPATH_MIN_MS) return false;
+        if (actor.pathIndex >= actor.path.length) return true;
+
+        // O alvo andou o bastante para a rota não levar mais a ele?
+        const dx = alvoX - actor.pathTargetX;
+        const dy = alvoY - actor.pathTargetY;
+        return dx * dx + dy * dy > BOT_REPATH_TARGET_MOVE * BOT_REPATH_TARGET_MOVE;
+    }
+
+    private tracaRota(actor: Actor, de: { x: number; y: number }, para: { x: number; y: number }): void {
+        // Cota do tick: numa virada em que vários bots perdem a rota ao mesmo
+        // tempo, os cálculos se espalham por ticks seguidos.
+        if (this.pathsNesteTick >= BOT_PATHS_PER_TICK) return;
+
+        actor.pathAt = this.now;
+        actor.pathTargetX = para.x;
+        actor.pathTargetY = para.y;
+
+        // Consulta O(1) antes da busca: alvo em outro componente do mapa não
+        // tem caminho, e sem este atalho o A* varreria tudo para descobrir.
+        if (!this.nav.canReach(de.x, de.y, para.x, para.y)) {
+            actor.clearPath();
+            return;
+        }
+
+        this.pathsNesteTick++;
+        const rota = this.nav.findPath(
+            de.x, de.y, para.x, para.y, actor.collisionRx, actor.collisionRy,
+        );
+
+        if (!rota) {
+            actor.clearPath();
+            return;
+        }
+
+        actor.path = rota;
+        actor.pathIndex = 0;
+    }
+
+    /** Waypoint que o bot está perseguindo, avançando os já alcançados. */
+    private waypointAtual(actor: Actor, de: { x: number; y: number }): { x: number; y: number } | undefined {
+        while (actor.pathIndex + 1 < actor.path.length) {
+            const x = actor.path[actor.pathIndex];
+            const y = actor.path[actor.pathIndex + 1];
+            const dx = x - de.x;
+            const dy = y - de.y;
+
+            if (dx * dx + dy * dy > BOT_WAYPOINT_TOLERANCE * BOT_WAYPOINT_TOLERANCE) {
+                return { x, y };
+            }
+            actor.pathIndex += 2;
+        }
+        return undefined;
+    }
+
+    /**
+     * Bot travado: andou quase nada na janela, mesmo tentando.
+     *
+     * A checagem é por janela (`BOT_STUCK_CHECK_MS`), não por tick — e o
+     * remédio é jogar a rota fora e liberar um recálculo imediato, que é o que
+     * tira o bot da margem do rio e o manda para a ponte.
+     */
+    private checkStuck(actor: Actor): void {
+        if (this.now - actor.progressAt < BOT_STUCK_CHECK_MS) return;
+
+        const andou = distance(actor.x, actor.y, actor.progressX, actor.progressY);
+        actor.progressX = actor.x;
+        actor.progressY = actor.y;
+        actor.progressAt = this.now;
+
+        if (andou >= BOT_STUCK_MIN_PROGRESS) return;
+
+        actor.clearPath();
+        actor.pathAt = 0; // libera o recálculo já no próximo passo
     }
 
     /**
@@ -812,6 +942,7 @@ export class World {
         actor.inputDy = 0;
         actor.cancelAttack();
         actor.cancelDash();
+        actor.clearPath();
         actor.respawnAt = this.now + (actor.isBot ? BOT_RESPAWN_DELAY_MS : HUMAN_RESPAWN_DELAY_MS);
     }
 
@@ -828,6 +959,7 @@ export class World {
         actor.inputDy = 0;
         actor.cancelAttack();
         actor.cancelDash();
+        actor.clearPath();
         this.placeAtSpawn(actor);
         actor.invulnUntil = this.now + RESPAWN_INVULN_MS;
         if (actor.isBot) actor.attackCooldown = 0;

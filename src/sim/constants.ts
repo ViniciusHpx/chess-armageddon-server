@@ -408,6 +408,40 @@ export const BOT_DODGE_REACTION_MS = 90;
 /** Folga sobre o alcance do atacante para o bot considerar o golpe perigoso. */
 export const BOT_DODGE_RANGE_SLACK = 1.25;
 
+// ---------------------------------------------------------------------------
+// NAVEGAÇÃO DOS BOTS
+//
+// O caminho só é recalculado por EVENTO (alvo mudou de lugar, rota acabou, bot
+// travado), nunca por tick. Enquanto o alvo estiver em linha de visão o bot nem
+// pede rota: vai direto, que é o caso comum em campo aberto.
+// ---------------------------------------------------------------------------
+
+/** Espera mínima entre dois cálculos de rota do MESMO bot. */
+export const BOT_REPATH_MIN_MS = 700;
+
+/** O alvo precisa ter andado isto para a rota valer a pena ser refeita. */
+export const BOT_REPATH_TARGET_MOVE = 220;
+
+/** Distância para considerar um waypoint alcançado. */
+export const BOT_WAYPOINT_TOLERANCE = 40;
+
+/** Janela de checagem de progresso; ver `BOT_STUCK_MIN_PROGRESS`. */
+export const BOT_STUCK_CHECK_MS = 600;
+
+/**
+ * Quanto o bot precisa ter andado dentro da janela para não ser considerado
+ * travado. Abaixo disso a rota é jogada fora e recalculada.
+ */
+export const BOT_STUCK_MIN_PROGRESS = 24;
+
+/**
+ * Buscas de caminho permitidas por tick, na sala inteira.
+ *
+ * Espalha o custo: numa virada em que todos perdem a rota ao mesmo tempo, os
+ * cálculos caem em ticks seguidos em vez de se acumularem num só.
+ */
+export const BOT_PATHS_PER_TICK = 2;
+
 /** Margem das bordas em que o bot inverte o rumo. */
 export const BOT_EDGE_MARGIN = 100;
 

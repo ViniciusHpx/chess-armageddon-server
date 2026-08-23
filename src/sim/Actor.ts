@@ -147,6 +147,26 @@ export class Actor {
     /** Cliente desconectado esperando reconexão: congela o personagem. */
     frozen = false;
 
+    // --- IA: navegação (bots) ---
+    /**
+     * Rota atual, como pares x,y de mundo. Vazia = indo direto no alvo.
+     *
+     * Guardada achatada num array só para não criar um objeto por waypoint a
+     * cada recálculo.
+     */
+    path: number[] = [];
+    pathIndex = 0;
+    /** Onde o alvo estava quando a rota foi traçada; ver BOT_REPATH_TARGET_MOVE. */
+    pathTargetX = 0;
+    pathTargetY = 0;
+    /** Instante do último cálculo de rota (`World.now`). */
+    pathAt = 0;
+
+    /** Posição na última checagem de progresso, para detectar bot travado. */
+    progressX = 0;
+    progressY = 0;
+    progressAt = 0;
+
     // --- IA (bots) ---
     wanderAngle = Math.random() * Math.PI * 2;
     wanderTimer = 0;
@@ -299,6 +319,12 @@ export class Actor {
 
     addAuraFromKill(victim: Actor): void {
         this.aura += AURA_KILL_VALUES[victim.rank.key] ?? 10;
+    }
+
+    /** Esquece a rota atual: o próximo passo decide de novo o que fazer. */
+    clearPath(): void {
+        this.path.length = 0;
+        this.pathIndex = 0;
     }
 
     /** Corta um dash em curso (morte, respawn). Não mexe no cooldown. */
