@@ -10,6 +10,8 @@ import {
     XP_PER_KILL, XP_PER_LEVEL, MAX_LEVEL, levelFromXp, xpProgress,
     WORLD_WIDTH, WORLD_HEIGHT, HALF_WORLD_WIDTH, SPAWN_ZONE, SPAWN_MIN_DISTANCE,
     BOT_STUCK_CHECK_MS, TEAM_SIZE, BOT_UNSTICK_MS,
+    CHARGE_MOVE_FACTOR, ATTACK_MOVE_FACTOR, movementFactor,
+    GAME_MODES, DEFAULT_GAME_MODE, sanitizeGameMode,
     DAMAGE_LIGHT, DAMAGE_MAX, AREA_MULT_LIGHT, AREA_MULT_MAX, KNOCKBACK_CHARGED_FACTOR,
     attackWindupMs, attackRecoveryMs, chargePower,
 } from "../src/sim/constants.js";
@@ -1282,5 +1284,93 @@ describe("World (simulação)", () => {
         const andou = Math.hypot(bot.x - inicio.x, bot.y - inicio.y);
         assert.ok(andou > 300, `o bot saiu só ${andou.toFixed(0)} px do canto`);
         assert.ok(BOT_UNSTICK_MS > 0);
+    });
+
+    // -----------------------------------------------------------------------
+    // LENTIDÃO AO CARREGAR O GOLPE
+    // -----------------------------------------------------------------------
+
+    it("quem carrega anda mais devagar, e volta ao normal ao soltar", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        actor.teleport(LIVRE_X, LIVRE_Y);
+
+        const andouEm = (ticks: number) => {
+            const x0 = actor.x;
+            for (let i = 0; i < ticks; i++) {
+                world.setInput(actor, 1, 0, world.now + i + 1);
+                world.tick(TICK_MS);
+            }
+            return actor.x - x0;
+        };
+
+        const normal = andouEm(4);
+
+        world.startCharge(actor);
+        const carregando = andouEm(4);
+
+        world.releaseAttack(actor);
+        // O golpe leva `attackWindupMs` para sair; depois dele a recuperação
+        // impede nova carga, mas a velocidade já é a normal.
+        advance(world, ATTACK_WINDUP_MAX_MS + ATTACK_RECOVERY_MAX_MS + TICK_MS * 2);
+        const depois = andouEm(4);
+
+        assert.ok(
+            Math.abs(carregando - normal * CHARGE_MOVE_FACTOR) < 1,
+            `carregando devia andar ${(normal * CHARGE_MOVE_FACTOR).toFixed(1)} px, andou ${carregando.toFixed(1)}`,
+        );
+        assert.ok(carregando < normal, "carregar tem de ser mais lento que andar normal");
+        assert.ok(
+            Math.abs(depois - normal) < 1,
+            `a velocidade devia voltar ao normal (${normal.toFixed(1)}), foi ${depois.toFixed(1)}`,
+        );
+    });
+
+    it("cancelar a carga devolve a velocidade na hora", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        actor.teleport(LIVRE_X, LIVRE_Y);
+
+        world.startCharge(actor);
+        world.setInput(actor, 1, 0, 1);
+        world.tick(TICK_MS);
+        const passoCarregando = Math.abs(actor.vx);
+
+        // `cancelAttack` é o caminho usado por morte/dash: solta a carga sem golpe.
+        actor.cancelAttack();
+        world.setInput(actor, 1, 0, 2);
+        world.tick(TICK_MS);
+
+        assert.ok(Math.abs(actor.vx) > passoCarregando, "sem carga, a velocidade volta");
+        assert.strictEqual(Math.abs(actor.vx), actor.rank.speed);
+    });
+
+    it("o golpe normal não teve a velocidade alterada", () => {
+        // Regressão: o fator do golpe em curso continua o mesmo de antes.
+        assert.strictEqual(movementFactor(true, false), ATTACK_MOVE_FACTOR);
+        assert.strictEqual(movementFactor(false, false), 1);
+        assert.strictEqual(movementFactor(false, true), CHARGE_MOVE_FACTOR);
+        // Estados não coexistem, mas se coexistissem o golpe manda.
+        assert.strictEqual(movementFactor(true, true), ATTACK_MOVE_FACTOR);
+    });
+
+    // -----------------------------------------------------------------------
+    // MODO DE JOGO
+    // -----------------------------------------------------------------------
+
+    it("o modo de jogo aceita só os valores oficiais", () => {
+        for (const modo of GAME_MODES) {
+            assert.strictEqual(sanitizeGameMode(modo), modo);
+        }
+
+        for (const lixo of [
+            "deathmatch", "TEAM_DEATHMATCH", "", null, undefined, 3, {}, [], true,
+            "__proto__", "constructor",
+        ]) {
+            assert.strictEqual(
+                sanitizeGameMode(lixo), DEFAULT_GAME_MODE,
+                `valor ${JSON.stringify(lixo)} devia cair no padrão`,
+            );
+        }
     });
 });

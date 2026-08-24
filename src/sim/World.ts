@@ -23,7 +23,7 @@ import {
 } from "./geometry.js";
 import { angleBetween, clamp, distance, randInt } from "./mathx.js";
 import {
-    ATTACK_MOVE_FACTOR, BOT_ATTACK_COOLDOWN_MS, BOT_ATTACK_RANGE_SLACK,
+    BOT_ATTACK_COOLDOWN_MS, BOT_ATTACK_RANGE_SLACK, movementFactor,
     BOT_ATTACK_RATE_PER_SECOND, BOT_EDGE_MARGIN, BOT_RESPAWN_DELAY_MS,
     BOT_SPEED_FACTOR, DAMAGE_CHARGED, DAMAGE_NORMAL, HUMAN_RESPAWN_DELAY_MS,
     INPUT_TIMEOUT_MS, KNOCKBACK_DECAY_MS, KNOCKBACK_MIN_SPEED,
@@ -411,8 +411,9 @@ export class World {
             return;
         }
 
-        // Durante o golpe anda devagar em vez de parar. Ver ATTACK_MOVE_FACTOR.
-        const speed = actor.rank.speed * (actor.attacking ? ATTACK_MOVE_FACTOR : 1);
+        // Golpe em curso anda devagar; carregando, mais devagar ainda. O fator
+        // sai de `movementFactor`, o mesmo que o cliente usa na previsão.
+        const speed = actor.rank.speed * movementFactor(actor.attacking, actor.charging);
         actor.vx = actor.inputDx * speed;
         actor.vy = actor.inputDy * speed;
 
@@ -450,7 +451,7 @@ export class World {
         else if (actor.y > WORLD_HEIGHT - m && Math.sin(moveAngle) > 0) moveAngle = -Math.PI / 2;
 
         const speed = actor.rank.speed * BOT_SPEED_FACTOR *
-            (actor.attacking ? ATTACK_MOVE_FACTOR : 1);
+            movementFactor(actor.attacking, actor.charging);
         actor.vx = Math.cos(moveAngle) * speed;
         actor.vy = Math.sin(moveAngle) * speed;
 

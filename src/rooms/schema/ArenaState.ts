@@ -92,4 +92,13 @@ export class ActorState extends Schema {
 export class ArenaState extends Schema {
     /** Chaveado pelo id do ator: sessionId para humanos, `bot_N` para bots. */
     @type({ map: ActorState }) actors = new MapSchema<ActorState>();
+
+    /**
+     * Modo de jogo da sala, como índice em `GAME_MODES`.
+     *
+     * Escrito uma única vez, na criação, e só pelo servidor — o cliente lê para
+     * saber em que modo entrou. Índice (e não string) pelo mesmo motivo de
+     * `rank` e `team`: é um byte e a ordem já é contrato entre os dois lados.
+     */
+    @type("uint8") mode: number = 0;
 }

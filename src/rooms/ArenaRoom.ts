@@ -4,6 +4,7 @@ import { Actor } from "../sim/Actor.js";
 import { World } from "../sim/World.js";
 import {
     RANKS, TEAM_INDEX, TEAM_SIZE, TICK_MS, RECONNECTION_SECONDS, DASH_COOLDOWN_MS, Team,
+    GAME_MODES, GameMode, sanitizeGameMode,
 } from "../sim/constants.js";
 
 /**
@@ -16,7 +17,7 @@ import {
  *   "d"  -             pediu um dash (direção e cooldown quem decide é o World)
  *   "r"  -             pediu para renascer (botão RENASCER)
  *
- * Entrada: o cliente cria a sala (`client.create("arena", { name, bots })`)
+ * Entrada: o cliente cria a sala (`client.create("arena", { name, bots, mode })`)
  * ou entra numa existente (`client.joinById(id, { name })`), sempre a partir
  * do lobby. `bots` é saneado aqui; o time é escolhido pelo servidor.
  *
@@ -49,6 +50,12 @@ export class ArenaRoom extends Room {
      * sala criada com 0 bots ganharia bots do nada na primeira saída.
      */
     private botsPerTeam = TEAM_SIZE;
+
+    /**
+     * Modo escolhido na criação. Ainda não muda regra nenhuma — é o rótulo que
+     * o lobby mostra e que as regras de cada modo vão consultar depois.
+     */
+    private gameMode: GameMode = sanitizeGameMode(undefined);
 
     private world = new World();
 
@@ -89,9 +96,15 @@ export class ArenaRoom extends Room {
      * @param options.bots Bots por time pedidos por quem criou a sala. Vem do
      *        cliente, então é saneado aqui: qualquer coisa fora de 0..TEAM_SIZE
      *        (ou não numérica) cai no padrão.
+     * @param options.mode Modo de jogo pedido. Idem: só os de `GAME_MODES`
+     *        passam; o resto vira `DEFAULT_GAME_MODE`.
      */
-    onCreate(options: { bots?: unknown } = {}): void {
+    onCreate(options: { bots?: unknown; mode?: unknown } = {}): void {
         this.botsPerTeam = sanitizeBots(options.bots);
+        // Allowlist no servidor: o cliente pede, o servidor decide. Valor
+        // estranho não é erro fatal — vira o padrão, e a sala sobe igual.
+        this.gameMode = sanitizeGameMode(options.mode);
+        this.state.mode = GAME_MODES.indexOf(this.gameMode);
 
         for (let i = 0; i < this.botsPerTeam; i++) {
             this.spawnBot("ally");
@@ -259,6 +272,9 @@ export class ArenaRoom extends Room {
             players: humanos,
             bots: total - humanos,
             capacity: TEAM_SIZE * 2,
+            // O lobby precisa mostrar o modo antes de entrar; o valor já é o
+            // saneado, então nada arbitrário chega à listagem.
+            mode: this.gameMode,
         });
 
         if (this.hasSlot("ally") || this.hasSlot("enemy")) this.unlock();

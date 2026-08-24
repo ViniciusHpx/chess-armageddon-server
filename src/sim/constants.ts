@@ -150,6 +150,39 @@ export const AURA_KILL_VALUES: Record<string, number> = {
 };
 
 // ---------------------------------------------------------------------------
+// MODOS DE JOGO
+//
+// Por enquanto o modo é só um RÓTULO da sala: nenhuma regra depende dele ainda.
+// Ele existe para a escolha do criador ficar registrada e chegar aos outros
+// clientes, e para as regras de cada modo terem onde se pendurar depois.
+//
+// A ordem é contrato de rede, como `RANK_ORDER` e `TEAM_ORDER`: é o índice que
+// trafega no schema. Modo novo entra no FIM da lista.
+// ---------------------------------------------------------------------------
+
+export const GAME_MODES = ["team_deathmatch", "capture_the_flag", "free_for_all"] as const;
+
+export type GameMode = (typeof GAME_MODES)[number];
+
+/**
+ * Padrão e fallback: é o comportamento que o jogo já tem hoje (dois times
+ * brigando sem condição de vitória), então sala antiga, cliente antigo ou
+ * valor inválido continuam caindo em algo que funciona.
+ */
+export const DEFAULT_GAME_MODE: GameMode = "team_deathmatch";
+
+/**
+ * Modo pedido pelo cliente, saneado.
+ *
+ * Allowlist estrita: qualquer coisa fora da lista (string arbitrária, número,
+ * objeto, ausente) vira o padrão. Nunca se guarda no estado da sala um valor
+ * que o cliente escolheu sem passar por aqui.
+ */
+export function sanitizeGameMode(raw: unknown): GameMode {
+    return GAME_MODES.includes(raw as GameMode) ? (raw as GameMode) : DEFAULT_GAME_MODE;
+}
+
+// ---------------------------------------------------------------------------
 // MUNDO E COMBATE
 // ---------------------------------------------------------------------------
 
@@ -295,6 +328,30 @@ export function attackRecoveryMs(power: number): number {
  * previsão local usa.
  */
 export const ATTACK_MOVE_FACTOR = 0.6;
+
+/**
+ * Fração da velocidade enquanto o golpe está sendo CARREGADO.
+ *
+ * Mais lento que o próprio golpe (0,6): segurar a carga passa a ter um custo
+ * de posicionamento, e não só de tempo — quem carrega fica mais fácil de
+ * acertar e mais difícil de escapar. Vale para humanos e bots; o dano, o
+ * alcance e o empurrão não mudam.
+ */
+export const CHARGE_MOVE_FACTOR = 0.45;
+
+/**
+ * Fator de velocidade do estado atual de combate.
+ *
+ * Fonte única dos dois lados (o cliente tem a cópia em `Hierarchy.js`): a
+ * velocidade nunca é calculada solta no meio do código, senão previsão,
+ * simulação e modo offline divergem. Os estados são exclusivos — não se
+ * carrega durante o golpe —, mas a ordem deixa isso explícito.
+ */
+export function movementFactor(attacking: boolean, charging: boolean): number {
+    if (attacking) return ATTACK_MOVE_FACTOR;
+    if (charging) return CHARGE_MOVE_FACTOR;
+    return 1;
+}
 
 /**
  * Apelidos dos extremos da escala, mantidos porque a IA raciocina com eles

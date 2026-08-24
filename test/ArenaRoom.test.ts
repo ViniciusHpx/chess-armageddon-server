@@ -268,4 +268,31 @@ describe("ArenaRoom", () => {
         room.state.actors.forEach((x) => { if (!x.bot) humanos++; });
         assert.strictEqual(humanos, 0);
     });
+
+    it("guarda o modo de jogo escolhido na criação", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", {
+            bots: 2, mode: "capture_the_flag",
+        });
+
+        assert.strictEqual(room.metadata.mode, "capture_the_flag", "o lobby precisa do modo");
+        assert.strictEqual(room.state.mode, 1, "e o cliente recebe o índice no estado");
+    });
+
+    it("modo inválido vira o padrão em vez de entrar no estado", async () => {
+        for (const lixo of ["hackmode", 42, null, { a: 1 }]) {
+            const room = await colyseus.createRoom<ArenaState>("arena", { mode: lixo } as never);
+            assert.strictEqual(room.metadata.mode, "team_deathmatch");
+            assert.strictEqual(room.state.mode, 0);
+            await room.disconnect();
+        }
+    });
+
+    it("sala criada sem modo continua funcionando (cliente antigo)", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", {});
+        const client = await colyseus.connectTo(room, { name: "Antigo" });
+
+        assert.strictEqual(room.metadata.mode, "team_deathmatch");
+        assert.strictEqual(room.state.mode, 0);
+        assert.ok(room.state.actors.get(client.sessionId), "o jogador entra normalmente");
+    });
 });
