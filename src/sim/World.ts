@@ -36,6 +36,7 @@ import {
     DASH_COOLDOWN_MS, DASH_DISTANCE, DASH_INVULN_MS, DASH_SPEED, DASH_TIMEOUT_MS,
     attackHalfBand, attackReach, knockbackSpeed, XP_PER_KILL,
     attackRecoveryMs, attackWindupMs, chargeAreaMult, chargeDamage, chargePower,
+    CHARGED_ATTACK_ENABLED,
 } from "./constants.js";
 
 /** Evento de combate emitido para o cliente reagir (som, shake, feedback). */
@@ -68,6 +69,25 @@ export class World {
 
     /** Mortes ocorridas no tick corrente; a sala consome e limpa. */
     kills: KillEvent[] = [];
+
+    /**
+     * Abates de cada time na partida.
+     *
+     * Fica aqui, e não somado dos atores, porque o `Actor` some quando o
+     * jogador sai: os abates que ele fez continuam valendo para o time.
+     */
+    readonly teamKills: Record<Team, number> = { ally: 0, enemy: 0 };
+
+    /**
+     * Abates que encerram a partida. 0 = sem condição de vitória.
+     *
+     * Quem define é a sala, a partir do modo de jogo — o `World` não conhece
+     * modos, só o número.
+     */
+    killLimit = 0;
+
+    /** Time vencedor, ou `null` enquanto a partida corre. */
+    winner: Team | null = null;
 
     private nextBotId = 0;
 
@@ -230,6 +250,15 @@ export class World {
         // cliente adulterado mandando "a" a 60 Hz não começa carga nenhuma
         // enquanto este prazo não vence.
         if (this.now < actor.attackReadyAt) return;
+
+        // TEMPORÁRIO: com o ataque carregado desligado, apertar o botão já
+        // dispara o golpe leve. O `releaseAttack` que vem depois não acha
+        // ninguém carregando e sai sozinho.
+        if (!CHARGED_ATTACK_ENABLED) {
+            this.beginAttack(actor, 0);
+            return;
+        }
+
         actor.charging = true;
         actor.chargeStartedAt = this.now;
         actor.chargeRatio = 0;
@@ -319,6 +348,11 @@ export class World {
     // -----------------------------------------------------------------------
 
     tick(deltaMs: number): void {
+        // Partida decidida: a simulação inteira congela (nem relógio anda),
+        // então ninguém se mexe, ataca ou renasce enquanto a tela de resultado
+        // está no ar. O estado continua sendo copiado para o schema pela sala.
+        if (this.winner !== null) return;
+
         this.now += deltaMs;
         const dt = deltaMs / 1000;
         this.pathsNesteTick = 0;
@@ -692,6 +726,10 @@ export class World {
     private botShouldCharge(
         target: Actor, alcancaNormal: boolean, alcancaCarregado: boolean,
     ): boolean {
+        // TEMPORÁRIO: sem ataque carregado o bot só bate leve — assim ele
+        // continua passando pelo `beginAttack` que já paga o cooldown.
+        if (!CHARGED_ATTACK_ENABLED) return false;
+
         if (!alcancaCarregado) return false;
 
         const finaliza = target.currentHealth > DAMAGE_NORMAL
@@ -905,8 +943,23 @@ export class World {
         attacker.addExperience(XP_PER_KILL);
         attacker.kills++;
         target.deaths++;
+        this.registerTeamKill(attacker.team);
         this.kill(target);
         this.kills.push({ killerId: attacker.id, victimId: target.id });
+    }
+
+    /**
+     * Soma o abate ao placar do time e decide a partida ao bater o limite.
+     *
+     * O vencedor nasce aqui, no mesmo lugar em que o abate é contado — não há
+     * caminho para o placar e o resultado discordarem, e nada disso vem do
+     * cliente.
+     */
+    private registerTeamKill(team: Team): void {
+        this.teamKills[team]++;
+
+        if (this.killLimit <= 0 || this.winner !== null) return;
+        if (this.teamKills[team] >= this.killLimit) this.winner = team;
     }
 
     /** Empurra `target` para longe de `attacker`, com a força do golpe atual. */

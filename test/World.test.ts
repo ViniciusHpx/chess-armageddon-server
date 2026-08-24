@@ -14,7 +14,16 @@ import {
     GAME_MODES, DEFAULT_GAME_MODE, sanitizeGameMode,
     DAMAGE_LIGHT, DAMAGE_MAX, AREA_MULT_LIGHT, AREA_MULT_MAX, KNOCKBACK_CHARGED_FACTOR,
     attackWindupMs, attackRecoveryMs, chargePower,
+    CHARGED_ATTACK_ENABLED,
 } from "../src/sim/constants.js";
+
+/**
+ * Testes que dependem do ataque carregado. Continuam escritos, mas pulam
+ * enquanto `CHARGED_ATTACK_ENABLED` estiver desligado (ver constants.ts) —
+ * sem carga não há o que medir, e apagá-los perderia a cobertura de quando a
+ * flag voltar.
+ */
+const itCarregado = CHARGED_ATTACK_ENABLED ? it : it.skip;
 
 /**
  * Roda `fn` com o sorteio do bot sempre passando.
@@ -84,7 +93,7 @@ describe("World (simulação)", () => {
         assert.strictEqual(attacker.attacking, false, "o golpe deveria ter terminado");
     });
 
-    it("o golpe carregado tira o dobro", () => {
+    itCarregado("o golpe carregado tira o dobro", () => {
         const world = new World();
         const attacker = world.addPlayer("a", "ally", "A");
         const target = world.addPlayer("b", "enemy", "B");
@@ -360,7 +369,7 @@ describe("World (simulação)", () => {
         );
     });
 
-    it("o golpe carregado empurra mais que o normal, mas não o dobro", () => {
+    itCarregado("o golpe carregado empurra mais que o normal, mas não o dobro", () => {
         const medir = (carregado: boolean): number => {
             const world = new World();
             const attacker = world.addPlayer("a", "ally", "A");
@@ -476,7 +485,7 @@ describe("World (simulação)", () => {
         assert.strictEqual(bot.chargePower, 0);
     });
 
-    it("o bot carrega para finalizar quando o normal não mataria", () => {
+    itCarregado("o bot carrega para finalizar quando o normal não mataria", () => {
         const world = new World();
         const bot = world.addBot("ally");
         const target = world.addPlayer("b", "enemy", "B");
@@ -491,7 +500,7 @@ describe("World (simulação)", () => {
         assert.strictEqual(bot.attacking, false);
     });
 
-    it("o bot carrega quando o alvo só está no alcance dobrado", () => {
+    itCarregado("o bot carrega quando o alvo só está no alcance dobrado", () => {
         const world = new World();
         const bot = world.addBot("ally");
         const target = world.addPlayer("b", "enemy", "B");
@@ -504,7 +513,7 @@ describe("World (simulação)", () => {
         assert.strictEqual(bot.charging, true, "fora do alcance normal, carregar é de graça");
     });
 
-    it("a carga do bot sai com o dano dobrado", () => {
+    itCarregado("a carga do bot sai com o dano dobrado", () => {
         const world = new World();
         const bot = world.addBot("ally");
         const target = world.addPlayer("b", "enemy", "B");
@@ -532,7 +541,7 @@ describe("World (simulação)", () => {
         );
     });
 
-    it("o bot desiste da carga se o alvo some", () => {
+    itCarregado("o bot desiste da carga se o alvo some", () => {
         const world = new World();
         const bot = world.addBot("ally");
         const target = world.addPlayer("b", "enemy", "B");
@@ -548,7 +557,7 @@ describe("World (simulação)", () => {
         assert.strictEqual(bot.attacking, false, "e não gasta golpe no vazio");
     });
 
-    it("o bot não fica preso segurando a carga se o alvo foge", () => {
+    itCarregado("o bot não fica preso segurando a carga se o alvo foge", () => {
         const world = new World();
         const bot = world.addBot("ally");
         const target = world.addPlayer("b", "enemy", "B");
@@ -624,7 +633,7 @@ describe("World (simulação)", () => {
         }
     });
 
-    it("o dano do golpe sai da carga medida pelo servidor", () => {
+    itCarregado("o dano do golpe sai da carga medida pelo servidor", () => {
         const world = new World();
         const attacker = world.addPlayer("a", "ally", "A");
         const target = world.addPlayer("b", "enemy", "B");
@@ -653,7 +662,7 @@ describe("World (simulação)", () => {
         assert.ok(tirou > DAMAGE_LIGHT && tirou < DAMAGE_MAX, "meia carga fica entre os extremos");
     });
 
-    it("o cliente não consegue inflar a carga mandando 'soltei' várias vezes", () => {
+    itCarregado("o cliente não consegue inflar a carga mandando 'soltei' várias vezes", () => {
         const world = new World();
         const attacker = world.addPlayer("a", "ally", "A");
         const target = world.addPlayer("b", "enemy", "B");
@@ -679,7 +688,7 @@ describe("World (simulação)", () => {
         assert.ok(tirou < DAMAGE_LIGHT * 1.2, "e nem somar vários golpes num só");
     });
 
-    it("a recuperação impede encadear golpes", () => {
+    itCarregado("a recuperação impede encadear golpes", () => {
         const world = new World();
         const attacker = world.addPlayer("a", "ally", "A");
         const target = world.addPlayer("b", "enemy", "B");
@@ -1290,7 +1299,7 @@ describe("World (simulação)", () => {
     // LENTIDÃO AO CARREGAR O GOLPE
     // -----------------------------------------------------------------------
 
-    it("quem carrega anda mais devagar, e volta ao normal ao soltar", () => {
+    itCarregado("quem carrega anda mais devagar, e volta ao normal ao soltar", () => {
         const world = new World();
         const actor = world.addPlayer("a", "ally", "A");
         actor.teleport(LIVRE_X, LIVRE_Y);
@@ -1326,7 +1335,7 @@ describe("World (simulação)", () => {
         );
     });
 
-    it("cancelar a carga devolve a velocidade na hora", () => {
+    itCarregado("cancelar a carga devolve a velocidade na hora", () => {
         const world = new World();
         const actor = world.addPlayer("a", "ally", "A");
         actor.teleport(LIVRE_X, LIVRE_Y);
@@ -1357,6 +1366,72 @@ describe("World (simulação)", () => {
     // -----------------------------------------------------------------------
     // MODO DE JOGO
     // -----------------------------------------------------------------------
+
+    it("o time vence ao bater o limite de abates, e a partida congela", () => {
+        const world = new World();
+        world.killLimit = 3;
+
+        const attacker = world.addPlayer("a", "ally", "A");
+        const target = world.addPlayer("b", "enemy", "B");
+
+        for (let i = 0; i < 3; i++) {
+            target.currentHealth = 1;
+            target.invulnUntil = 0;
+            placeSideBySide(attacker, target);
+            swing(world, attacker);
+            advance(world, 300);
+            if (!target.alive) target.teleport(LIVRE_X + 110, LIVRE_Y);
+            target.alive = true;
+        }
+
+        assert.strictEqual(world.teamKills.ally, 3, "o placar do time conta os abates");
+        assert.strictEqual(world.winner, "ally");
+
+        // Congelada: nem o relógio anda, então nada se move nem renasce.
+        const now = world.now;
+        const x = attacker.x;
+        attacker.inputDx = 1;
+        advance(world, 500);
+
+        assert.strictEqual(world.now, now, "a simulação parou");
+        assert.strictEqual(attacker.x, x, "ninguém anda depois do fim");
+    });
+
+    it("sem limite de abates a partida não acaba", () => {
+        const world = new World();
+        const attacker = world.addPlayer("a", "ally", "A");
+        const target = world.addPlayer("b", "enemy", "B");
+
+        for (let i = 0; i < 3; i++) {
+            target.currentHealth = 1;
+            target.invulnUntil = 0;
+            placeSideBySide(attacker, target);
+            swing(world, attacker);
+            advance(world, 300);
+            target.alive = true;
+        }
+
+        assert.strictEqual(world.teamKills.ally, 3);
+        assert.strictEqual(world.winner, null, "killLimit 0 = sem condição de vitória");
+    });
+
+    it("o abate continua contando para o time depois que o jogador sai", () => {
+        const world = new World();
+        world.killLimit = 5;
+
+        const attacker = world.addPlayer("a", "ally", "A");
+        const target = world.addPlayer("b", "enemy", "B");
+
+        target.currentHealth = 1;
+        target.invulnUntil = 0;
+        placeSideBySide(attacker, target);
+        swing(world, attacker);
+        advance(world, 300);
+
+        world.remove(attacker.id);
+
+        assert.strictEqual(world.teamKills.ally, 1, "o placar é do time, não do ator");
+    });
 
     it("o modo de jogo aceita só os valores oficiais", () => {
         for (const modo of GAME_MODES) {

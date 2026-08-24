@@ -1,9 +1,13 @@
 import assert from "assert";
 import { ColyseusTestServer, boot } from "@colyseus/testing";
+import { matchMaker } from "colyseus";
 
 import appConfig from "../src/app.config.js";
 import { ArenaState } from "../src/rooms/schema/ArenaState.js";
-import { RANKS, TEAM_SIZE, TICK_MS } from "../src/sim/constants.js";
+import { CHARGED_ATTACK_ENABLED, RANKS, TEAM_SIZE, TICK_MS } from "../src/sim/constants.js";
+
+/** Ver a nota igual em World.test.ts: pula enquanto a carga estiver desligada. */
+const itCarregado = CHARGED_ATTACK_ENABLED ? it : it.skip;
 
 /** Espera tempo real de simulação: o World roda em setSimulationInterval. */
 const waitTicks = (n: number) => new Promise((r) => setTimeout(r, TICK_MS * n + 30));
@@ -130,7 +134,7 @@ describe("ArenaRoom", () => {
         );
     });
 
-    it("só marca golpe carregado se o botão ficou tempo suficiente", async () => {
+    itCarregado("só marca golpe carregado se o botão ficou tempo suficiente", async () => {
         const room = await colyseus.createRoom<ArenaState>("arena", {});
         const client = await colyseus.connectTo(room);
         const actor = room.state.actors.get(client.sessionId)!;
@@ -267,6 +271,59 @@ describe("ArenaRoom", () => {
         let humanos = 0;
         room.state.actors.forEach((x) => { if (!x.bot) humanos++; });
         assert.strictEqual(humanos, 0);
+    });
+
+    it("a revanche cria uma sala só, mesmo com dois pedidos juntos", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", { bots: 1 });
+        const a = await colyseus.connectTo(room, { name: "A" });
+        const b = await colyseus.connectTo(room, { name: "B" });
+
+        // Fim de partida forçado: quem decide é o World, e aqui só interessa o
+        // estado "decidida".
+        (room as never as { world: { winner: string } }).world.winner = "ally";
+        await waitTicks(2);
+        assert.ok(room.state.winner >= 0, "o vencedor precisa chegar ao estado");
+
+        a.send("rm");
+        b.send("rm");
+        await waitTicks(8);
+
+        const id = room.state.rematchRoomId;
+        assert.ok(id, "a sala da revanche deveria ter sido criada");
+
+        const arenas = await matchMaker.query({ name: "arena" });
+        assert.strictEqual(arenas.length, 2, "só pode existir a sala antiga e a revanche");
+        assert.ok(arenas.some((sala) => sala.roomId === id));
+    });
+
+    it("não cria revanche antes de a partida acabar", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", {});
+        const client = await colyseus.connectTo(room);
+
+        client.send("rm");
+        await waitTicks(6);
+
+        assert.strictEqual(room.state.rematchRoomId, "", "partida em curso não tem revanche");
+        assert.strictEqual((await matchMaker.query({ name: "arena" })).length, 1);
+    });
+
+    it("partida decidida não aceita mais ninguém", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", { bots: 0 });
+        (room as never as { world: { winner: string } }).world.winner = "ally";
+        await waitTicks(2);
+
+        await assert.rejects(() => colyseus.connectTo(room, { name: "Atrasado" }));
+    });
+
+    it("o segundo jogador entra no time oposto ao do primeiro", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", { bots: 0 });
+        const a = await colyseus.connectTo(room, { name: "A" });
+        const b = await colyseus.connectTo(room, { name: "B" });
+
+        const timeA = room.state.actors.get(a.sessionId)!.team;
+        const timeB = room.state.actors.get(b.sessionId)!.team;
+
+        assert.notStrictEqual(timeA, timeB, "a revanche depende deste equilíbrio");
     });
 
     it("guarda o modo de jogo escolhido na criação", async () => {

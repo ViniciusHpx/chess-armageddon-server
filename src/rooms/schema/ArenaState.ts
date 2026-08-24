@@ -101,4 +101,23 @@ export class ArenaState extends Schema {
      * `rank` e `team`: é um byte e a ordem já é contrato entre os dois lados.
      */
     @type("uint8") mode: number = 0;
+
+    /** Abates do time `ally` e do time `enemy` na partida. */
+    @type("uint16") scoreAlly: number = 0;
+    @type("uint16") scoreEnemy: number = 0;
+
+    /**
+     * Time vencedor como índice em `TEAM_ORDER` (0 = ally, 1 = enemy), ou -1
+     * enquanto a partida corre. É o único sinal de fim de partida: o cliente
+     * mostra a tela de resultado por ele e nunca decide sozinho.
+     */
+    @type("int8") winner: number = -1;
+
+    /**
+     * Sala da revanche, criada sob demanda quando o PRIMEIRO jogador aceita.
+     *
+     * Vazia enquanto ninguém aceitou. Como trafega para todo mundo, quem
+     * aceitar depois entra nesta mesma sala em vez de criar outra.
+     */
+    @type("string") rematchRoomId: string = "";
 }

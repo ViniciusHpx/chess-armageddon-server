@@ -242,6 +242,25 @@ export const TICK_MS = 50;
 // (segurar até o fim vale mais), abaixo de 1 entrega cedo.
 // ---------------------------------------------------------------------------
 
+/**
+ * TEMPORÁRIO: ataque carregado desligado.
+ *
+ * Com `false`, apertar o botão já dispara o golpe leve (potência 0) e ninguém
+ * — jogador ou bot — chega a entrar em estado de carga. Toda a máquina da
+ * carga continua no lugar (`chargePower`, `chargeDamage`, `startCharge`,
+ * `botShouldCharge`...): basta voltar esta flag para `true` para reativá-la.
+ */
+export const CHARGED_ATTACK_ENABLED = false;
+
+/**
+ * Abates que um time precisa somar para vencer no modo `team_deathmatch`.
+ *
+ * Só vale para esse modo: a `ArenaRoom` é quem repassa este número ao
+ * `World.killLimit`, e nos outros modos ele fica em 0 (sem condição de
+ * vitória, que é o comportamento que a arena sempre teve).
+ */
+export const TEAM_KILL_LIMIT = 40;
+
 /** Dano de um toque rápido no botão. */
 export const DAMAGE_LIGHT = 25;
 /** Teto de dano de um único golpe, por mais que se segure. */
