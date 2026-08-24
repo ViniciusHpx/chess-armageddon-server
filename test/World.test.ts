@@ -1167,6 +1167,45 @@ describe("World (simulação)", () => {
         );
     });
 
+    it("encostado num obstáculo, a posição fica parada (sem tremor)", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+
+        // Empurra contra a muralha, a quina e as bordas do mapa; em regime
+        // estacionário a posição não pode oscilar. Foi essa oscilação —
+        // resgate empurra, entrada devolve — que aparecia como tremor na tela.
+        const casos: Array<[string, number, number, number, number]> = [
+            ["parede oeste", 400, 800, -1, 0],
+            ["quina noroeste", 400, 800, -1, -1],
+            ["borda superior", 400, 600, 0, -1],
+            ["borda inferior", 400, 1400, 0, 1],
+        ];
+
+        for (const [nome, x0, y0, dx, dy] of casos) {
+            actor.teleport(x0, y0);
+
+            let seq = 1;
+            for (let i = 0; i < 150; i++) {
+                world.setInput(actor, dx, dy, seq++);
+                world.tick(TICK_MS);
+            }
+
+            // Já encostado: os próximos ticks têm de deixar tudo no lugar.
+            const parado = { x: actor.x, y: actor.y };
+            for (let i = 0; i < 40; i++) {
+                world.setInput(actor, dx, dy, seq++);
+                world.tick(TICK_MS);
+
+                assert.ok(
+                    Math.hypot(actor.x - parado.x, actor.y - parado.y) < 0.5,
+                    `${nome}: a posição oscilou ` +
+                    `(${parado.x.toFixed(1)},${parado.y.toFixed(1)}) -> ` +
+                    `(${actor.x.toFixed(1)},${actor.y.toFixed(1)})`,
+                );
+            }
+        }
+    });
+
     it("quem for espremido para dentro da parede sai sozinho", () => {
         const world = new World();
         const actor = world.addPlayer("a", "ally", "A");

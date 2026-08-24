@@ -201,11 +201,15 @@ export class CollisionMask {
      *
      * Não é o modo normal de mover: é um empurrão de poucos pixels, e só
      * acontece quando o estado já estava quebrado.
+     *
+     * O passo é fino (2 px) porque o resgate precisa sair pelo caminho mais
+     * curto. Com passo grosso ele pulava vários pixels, o movimento empurrava
+     * de volta contra a parede e o resgate disparava outra vez — vira tremor.
      */
     nearestFree(
         x: number, y: number, offsetY: number, rx: number, ry: number,
     ): { x: number; y: number } | undefined {
-        for (let raio = 8; raio <= 96; raio += 8) {
+        for (let raio = 2; raio <= 96; raio += 2) {
             for (let i = 0; i < 8; i++) {
                 const ang = (i / 8) * Math.PI * 2;
                 const px = x + Math.cos(ang) * raio;
