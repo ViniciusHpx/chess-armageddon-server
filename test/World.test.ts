@@ -1869,6 +1869,364 @@ describe("World (simulação)", () => {
         );
     });
 
+    /** Distância de `y` até o centro da elipse, para o rank atual do ator. */
+    function alturaCentro(actor: Actor): number {
+        return actor.rank.size.height / 2 - actor.collisionRx + (actor.collisionRy * 4) / 3;
+    }
+
+    /**
+     * Os tabuleiros de ponte da metade esquerda, lidos DA MÁSCARA.
+     *
+     * Nenhuma coordenada cravada no teste: quem sabe onde estão as pontes é a
+     * máscara (`npm run paint:bridges`). Como o mundo é o espelho desta
+     * metade, cobrir os tabuleiros daqui é cobrir todas as pontes do mapa — e
+     * os testes abaixo iteram sobre a lista, então uma ponte nova entra sem
+     * ninguém escrever nada.
+     */
+    function achaTabuleiros(world: World): { minX: number; maxX: number; minY: number; maxY: number }[] {
+        const PASSO = 8;
+        const cols = Math.ceil(HALF_WORLD_WIDTH / PASSO);
+        const rows = Math.ceil(WORLD_HEIGHT / PASSO);
+        const ponte = new Uint8Array(cols * rows);
+
+        for (let cy = 0; cy < rows; cy++) {
+            for (let cx = 0; cx < cols; cx++) {
+                if (world.mask.isBridge(cx * PASSO, cy * PASSO)) ponte[cy * cols + cx] = 1;
+            }
+        }
+
+        const visto = new Uint8Array(cols * rows);
+        const fila: number[] = [];
+        const caixas: { minX: number; maxX: number; minY: number; maxY: number }[] = [];
+
+        for (let inicio = 0; inicio < ponte.length; inicio++) {
+            if (!ponte[inicio] || visto[inicio]) continue;
+
+            fila.length = 0;
+            fila.push(inicio);
+            visto[inicio] = 1;
+            const caixa = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+
+            for (let i = 0; i < fila.length; i++) {
+                const atual = fila[i];
+                const cx = atual % cols;
+                const cy = (atual / cols) | 0;
+                caixa.minX = Math.min(caixa.minX, cx * PASSO);
+                caixa.maxX = Math.max(caixa.maxX, cx * PASSO);
+                caixa.minY = Math.min(caixa.minY, cy * PASSO);
+                caixa.maxY = Math.max(caixa.maxY, cy * PASSO);
+
+                for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+                    const nx = cx + dx;
+                    const ny = cy + dy;
+                    if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+                    const v = ny * cols + nx;
+                    if (!ponte[v] || visto[v]) continue;
+                    visto[v] = 1;
+                    fila.push(v);
+                }
+            }
+            caixas.push(caixa);
+        }
+
+        assert.ok(
+            caixas.length > 0,
+            "a máscara não tem ponte pintada — rode `npm run paint:bridges` e `npm run sync:mask`",
+        );
+        return caixas;
+    }
+
+    /**
+     * Empurra o ator numa direção por `ticks` ticks, olhando a cada um.
+     *
+     * A sequência é um contador que NUNCA reinicia: `World.setInput` descarta
+     * pacote com sequência já processada, então recomeçar do 1 a cada trecho
+     * faria o servidor ignorar a nova direção e seguir com a anterior — um
+     * teste verde medindo a coisa errada.
+     */
+    let seqEmpurra = 0;
+    function empurra(
+        world: World, actor: Actor, dx: number, dy: number, ticks: number,
+        olho?: () => void,
+    ): void {
+        for (let t = 0; t < ticks; t++) {
+            world.setInput(actor, dx, dy, ++seqEmpurra);
+            actor.lastInputAt = world.now;
+            world.tick(TICK_MS);
+            olho?.();
+        }
+    }
+
+    it("a ponte é chão de verdade: caminhável, e não é água", () => {
+        const world = new World();
+
+        for (const t of achaTabuleiros(world)) {
+            const cx = (t.minX + t.maxX) / 2;
+            const cy = (t.minY + t.maxY) / 2;
+
+            assert.strictEqual(world.mask.isBridge(cx, cy), true, "o meio do tabuleiro é ponte");
+            assert.strictEqual(world.mask.isWalkable(cx, cy), true, "a ponte é caminhável");
+            assert.strictEqual(world.mask.isWater(cx, cy), false, "a ponte não é água");
+
+            // A metade direita é o espelho: a mesma ponte existe lá, com a
+            // mesma classe. É isso que faz UMA regra valer para as DUAS.
+            const espelhado = WORLD_WIDTH - 1 - cx;
+            assert.strictEqual(
+                world.mask.isBridge(espelhado, cy), true,
+                "a ponte espelhada também é ponte",
+            );
+        }
+    });
+
+    it("na ponte anda-se a 100%: ela não herda o freio da água", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        const offset = alturaCentro(actor);
+
+        // Em terra firme, a referência.
+        actor.teleport(LIVRE_X, LIVRE_Y);
+        world.setInput(actor, 1, 0, 1);
+        actor.lastInputAt = world.now;
+        const antesTerra = actor.x;
+        world.tick(TICK_MS);
+        const naTerra = actor.x - antesTerra;
+
+        for (const t of achaTabuleiros(world)) {
+            const cy = (t.minY + t.maxY) / 2;
+            actor.teleport((t.minX + t.maxX) / 2, cy - offset);
+
+            world.setInput(actor, 1, 0, 2);
+            actor.lastInputAt = world.now;
+            const antes = actor.x;
+            world.tick(TICK_MS);
+            const naPonte = actor.x - antes;
+
+            assert.ok(
+                Math.abs(naPonte / naTerra - 1) < 0.02,
+                `na ponte andou ${(naPonte / naTerra).toFixed(2)} do normal ` +
+                `— a ponte pegou o ${WATER_SPEED_FACTOR} da água`,
+            );
+        }
+    });
+
+    it("quem vem pelo rio não sobe no meio da ponte, e não fica preso na lateral", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        const offset = alturaCentro(actor);
+        let lateraisTestadas = 0;
+
+        // O resgate é a última linha de defesa e NÃO pode ser o que segura
+        // quem empurra o parapeito: se ele aparecer aqui, a colisão travou —
+        // é o mesmo espião do teste da travessia do rio.
+        const proto = CollisionMask.prototype as unknown as {
+            nearestFree: (...args: unknown[]) => unknown;
+        };
+        const original = proto.nearestFree;
+        let resgates = 0;
+        proto.nearestFree = function (this: unknown, ...args: unknown[]) {
+            resgates++;
+            return original.apply(this, args);
+        };
+
+        try {
+            for (const t of achaTabuleiros(world)) {
+                const cx = (t.minX + t.maxX) / 2;
+
+                // As LATERAIS do tabuleiro são os lados que dão na água; as
+                // cabeceiras dão na terra. Quem decide é a máscara, lado a lado.
+                for (const lado of [-1, 1]) {
+                    const foraY = lado < 0 ? t.minY - 40 : t.maxY + 40;
+                    if (!world.mask.isWater(cx, foraY)) continue;
+                    if (!world.mask.canStand(cx, foraY, actor.collisionRx, actor.collisionRy)) continue;
+
+                    lateraisTestadas++;
+                    actor.teleport(cx, foraY - offset);
+
+                    let subiu = 0;
+                    const ys: number[] = [];
+                    empurra(world, actor, 0, -lado, 120, () => {
+                        const centro = actor.ellipseCenter();
+                        if (world.mask.isBridge(centro.x, centro.y)) subiu++;
+                        ys.push(actor.y);
+                    });
+
+                    const centro = actor.ellipseCenter();
+                    assert.strictEqual(
+                        subiu, 0,
+                        `entrou na ponte pela lateral vindo do rio (${subiu} ticks em cima do tabuleiro)`,
+                    );
+                    assert.ok(
+                        lado < 0 ? centro.y < t.minY : centro.y > t.maxY,
+                        `atravessou o parapeito: centro em y=${centro.y.toFixed(0)}`,
+                    );
+
+                    // Encostado, a posição fica PARADA: nada de tremor de ida e
+                    // volta contra a lateral, que seria o sintoma do resgate
+                    // brigando com a entrada.
+                    const parado = ys.slice(-20);
+                    const amplitude = Math.max(...parado) - Math.min(...parado);
+                    assert.ok(
+                        amplitude < 0.5,
+                        `tremeu ${amplitude.toFixed(2)} px encostado no parapeito`,
+                    );
+
+                    // Nadar RENTE ao parapeito continua funcionando: o passo
+                    // diagonal desliza pela lateral em vez de parar seco.
+                    const antesX = actor.x;
+                    empurra(world, actor, 1, -lado, 20);
+                    assert.ok(
+                        actor.x - antesX > 20,
+                        `não deslizou ao longo do parapeito: andou ${(actor.x - antesX).toFixed(1)} px`,
+                    );
+                }
+            }
+        } finally {
+            proto.nearestFree = original;
+        }
+
+        assert.ok(lateraisTestadas > 0, "nenhuma lateral de ponte dá na água — o teste não mediu nada");
+        assert.strictEqual(resgates, 0, `o resgate foi acionado ${resgates}x no parapeito`);
+    });
+
+    it("pela cabeceira atravessa a ponte inteira e sai do outro lado", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        const offset = alturaCentro(actor);
+
+        for (const t of achaTabuleiros(world)) {
+            const cy = (t.minY + t.maxY) / 2;
+
+            // Cabeceira: o lado que dá na TERRA (nem água nem ponte).
+            const entrada = t.minX - 60;
+            assert.strictEqual(world.mask.isWater(entrada, cy), false, "a cabeceira é terra");
+            assert.strictEqual(world.mask.isBridge(entrada, cy), false, "a cabeceira ainda não é ponte");
+            assert.ok(
+                world.mask.canStand(entrada, cy, actor.collisionRx, actor.collisionRy),
+                "a partida tem de ser chão livre",
+            );
+
+            actor.teleport(entrada, cy - offset);
+
+            let noTabuleiro = 0;
+            empurra(world, actor, 1, 0, 200, () => {
+                const centro = actor.ellipseCenter();
+                if (world.mask.isBridge(centro.x, centro.y)) noTabuleiro++;
+            });
+
+            assert.ok(noTabuleiro > 0, "não passou pelo tabuleiro em momento algum");
+            assert.ok(
+                actor.ellipseCenter().x > t.maxX,
+                `não saiu do outro lado: parou em x=${actor.x.toFixed(0)} (ponte até ${t.maxX})`,
+            );
+        }
+    });
+
+    it("o bot não vê passagem do rio para o meio da ponte, e a travessia continua existindo", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+
+        for (const t of achaTabuleiros(world)) {
+            const cx = (t.minX + t.maxX) / 2;
+            const cy = (t.minY + t.maxY) / 2;
+
+            const rio = { x: cx, y: t.minY - 40 };
+            if (!world.mask.isWater(rio.x, rio.y)) continue;
+
+            assert.strictEqual(
+                world.nav.hasLineOfSight(rio.x, rio.y, cx, cy, actor.collisionRx, actor.collisionRy),
+                false,
+                "o bot achou reta livre do rio para o meio da ponte",
+            );
+
+            // E o caminho de verdade continua lá: sair do rio, chegar a uma
+            // cabeceira e atravessar.
+            const oeste = { x: t.minX - 60, y: cy };
+            const leste = { x: t.maxX + 60, y: cy };
+
+            assert.strictEqual(
+                world.nav.canReach(oeste.x, oeste.y, leste.x, leste.y), true,
+                "as duas cabeceiras deixaram de se enxergar — a ponte virou barreira",
+            );
+            assert.ok(
+                world.nav.findPath(oeste.x, oeste.y, leste.x, leste.y, actor.collisionRx, actor.collisionRy),
+                "o A* não acha mais rota atravessando a ponte",
+            );
+            assert.strictEqual(
+                world.nav.canReach(rio.x, rio.y, leste.x, leste.y), true,
+                "quem está no rio não chega mais à outra margem",
+            );
+        }
+    });
+
+    it("nem sendo empurrado por outro personagem se entra na ponte pela lateral", () => {
+        const world = new World();
+        const empurrado = world.addPlayer("a", "ally", "A");
+        const empurrador = world.addPlayer("b", "ally", "B");
+        const offset = alturaCentro(empurrado);
+
+        for (const t of achaTabuleiros(world)) {
+            const cx = (t.minX + t.maxX) / 2;
+
+            // Os dois na água, o de trás colado: a separação entre personagens
+            // empurra o da frente CONTRA a lateral do tabuleiro. Ela escreve
+            // posição direto, sem passar pelo `resolveMove` — é o caminho que a
+            // revalidação do tick precisa cobrir.
+            const frente = t.minY - 8;
+            const atras = t.minY - 30;
+            if (!world.mask.isWater(cx, frente) || !world.mask.isWater(cx, atras)) continue;
+
+            empurrado.teleport(cx, frente - offset);
+            empurrador.teleport(cx, atras - offset);
+
+            let subiu = 0;
+            for (let i = 0; i < 60; i++) {
+                world.tick(TICK_MS);
+                const centro = empurrado.ellipseCenter();
+                if (world.mask.isBridge(centro.x, centro.y)) subiu++;
+            }
+
+            assert.strictEqual(subiu, 0, "a separação entre personagens furou o parapeito");
+        }
+    });
+
+    it("o bot que está no rio contorna até a cabeceira em vez de subir pela lateral", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const alvo = world.addPlayer("p", "enemy", "Alvo");
+        alvo.invulnUntil = Number.MAX_SAFE_INTEGER;
+
+        for (const t of achaTabuleiros(world)) {
+            const cx = (t.minX + t.maxX) / 2;
+            const cy = (t.minY + t.maxY) / 2;
+            const offset = alturaCentro(bot);
+
+            const rioY = t.minY - 40;
+            if (!world.mask.isWater(cx, rioY)) continue;
+            if (!world.mask.canStand(cx, rioY, bot.collisionRx, bot.collisionRy)) continue;
+
+            // Bot no rio, colado na lateral da ponte; alvo na margem oposta,
+            // na altura do tabuleiro. A subida lateral seria o caminho curto.
+            bot.teleport(cx, rioY - offset);
+            alvo.teleport(t.maxX + 120, cy - offset);
+
+            let anterior = bot.ellipseCenter();
+            let subiuDaAgua = 0;
+            let cruzou = false;
+
+            for (let i = 0; i < 900 && !cruzou; i++) {
+                world.tick(TICK_MS);
+                const centro = bot.ellipseCenter();
+                if (world.mask.isBridge(centro.x, centro.y)
+                    && world.mask.isWater(anterior.x, anterior.y)) subiuDaAgua++;
+                anterior = centro;
+                if (centro.x > t.maxX) cruzou = true;
+            }
+
+            assert.strictEqual(subiuDaAgua, 0, "o bot subiu na ponte direto da água");
+            assert.ok(cruzou, `o bot ficou preso em (${bot.x.toFixed(0)}, ${bot.y.toFixed(0)})`);
+        }
+    });
+
     it("bot travado escolhe uma saída que a máscara aprova", () => {
         const world = new World();
         const bot = world.addBot("ally");

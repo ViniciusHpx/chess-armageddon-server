@@ -4,8 +4,14 @@
  * O bot não pode simplesmente andar na direção do alvo: o mapa tem rio, muralha
  * e uma ponte, e a linha reta encosta na parede e para. Aqui o mesmo
  * `CollisionMask` que decide a colisão vira um grid grosseiro, e o caminho sai
- * de um A* sobre ele — a ponte é só mais uma célula caminhável, sem regra
- * especial para "rio" ou "ponte".
+ * de um A* sobre ele.
+ *
+ * A ponte é célula caminhável como qualquer outra, com o custo do chão. A
+ * ÚNICA regra de terreno é a mesma da colisão (`CollisionMask.canCross`): não
+ * existe aresta entre uma célula de água e uma de ponte, então o A* leva o bot
+ * até uma cabeceira antes de atravessar, em vez de subir no meio do tabuleiro
+ * pela lateral. Não há regra de "rio" em lugar nenhum: a água segue sendo rota,
+ * só que mais cara.
  *
  * **Resolução.** 32 px por célula: 156 x 53 = 8268 células no mapa inteiro
  * (~8 KB de bytes + 16 KB de rótulos). A ponte tem ~96 px de altura livre, ou
@@ -51,6 +57,16 @@ export class NavGrid {
      */
     private readonly water: Uint8Array;
 
+    /**
+     * 1 = célula de tabuleiro de ponte.
+     *
+     * Custo igual ao do chão (ponte É chão), mas a aresta água <-> ponte não
+     * existe — nem no A*, nem na rotulagem, nem na linha de visão. Sem isto o
+     * bot pediria justamente a rota que a colisão recusa e ficaria empurrando a
+     * lateral do tabuleiro até a checagem de travado tirá-lo de lá.
+     */
+    private readonly bridge: Uint8Array;
+
     /** Rótulo do componente conexo de cada célula; -1 = bloqueada. */
     private readonly component: Int16Array;
 
@@ -80,6 +96,7 @@ export class NavGrid {
         const total = this.cols * this.rows;
         this.walkable = new Uint8Array(total);
         this.water = new Uint8Array(total);
+        this.bridge = new Uint8Array(total);
         this.component = new Int16Array(total).fill(-1);
         this.gScore = new Float32Array(total);
         this.fScore = new Float32Array(total);
@@ -109,10 +126,23 @@ export class NavGrid {
                 const i = ry_ * this.cols + cx;
                 this.walkable[i] = 1;
                 if (this.mask.isWater(x, y)) this.water[i] = 1;
+                else if (this.mask.isBridge(x, y)) this.bridge[i] = 1;
             }
         }
 
         this.rotulaComponentes();
+    }
+
+    /**
+     * A aresta entre estas duas células é o parapeito da ponte?
+     *
+     * Espelha `CollisionMask.canCross` no grosso do grid: a única transição
+     * proibida é água <-> ponte. Terra <-> ponte (a entrada) e terra <-> água
+     * (qualquer margem) continuam valendo.
+     */
+    private parapeito(a: number, b: number): boolean {
+        return (this.water[a] === 1 && this.bridge[b] === 1)
+            || (this.bridge[a] === 1 && this.water[b] === 1);
     }
 
     /** Flood fill em largura; roda uma vez e responde "dá para chegar?" depois. */
@@ -140,6 +170,10 @@ export class NavGrid {
 
                     const vizinho = ny * this.cols + nx;
                     if (!this.walkable[vizinho] || this.component[vizinho] !== -1) continue;
+                    // O parapeito também separa componentes: "existe caminho?"
+                    // tem de responder o mesmo que o A*, senão o bot pede uma
+                    // rota que nunca sai.
+                    if (this.parapeito(atual, vizinho)) continue;
 
                     this.component[vizinho] = rotulo;
                     fila[cauda++] = vizinho;
@@ -206,9 +240,22 @@ export class NavGrid {
         if (dist < 1) return true;
 
         const passos = Math.ceil(dist / LOS_PASSO);
+        let anteriorX = x0;
+        let anteriorY = y0;
+
         for (let i = 1; i <= passos; i++) {
             const t = i / passos;
-            if (!this.mask.canStand(x0 + dx * t, y0 + dy * t, rx, ry)) return false;
+            const x = x0 + dx * t;
+            const y = y0 + dy * t;
+            if (!this.mask.canStand(x, y, rx, ry)) return false;
+            // O parapeito da ponte fecha a linha de visão como uma parede:
+            // sem isto o bot enxergaria "reta livre" atravessando a lateral do
+            // tabuleiro e nem chegaria a pedir rota. Um tabuleiro é muito mais
+            // largo que `LOS_PASSO`, então a amostragem nunca pula por cima
+            // dele.
+            if (!this.mask.canCross(anteriorX, anteriorY, x, y)) return false;
+            anteriorX = x;
+            anteriorY = y;
         }
         return true;
     }
@@ -266,12 +313,16 @@ export class NavGrid {
 
                 const vizinho = ny * this.cols + nx;
                 if (!this.walkable[vizinho]) continue;
+                if (this.parapeito(atual, vizinho)) continue;
 
                 // Diagonal só passa se os dois lados estiverem livres: sem isso
-                // a rota corta quinas por onde o corpo não passa.
+                // a rota corta quinas por onde o corpo não passa — e, com a
+                // ponte, por onde o parapeito não deixa.
                 if (dx !== 0 && dy !== 0) {
-                    if (!this.walkable[cy * this.cols + nx]) continue;
-                    if (!this.walkable[ny * this.cols + cx]) continue;
+                    const ladoX = cy * this.cols + nx;
+                    const ladoY = ny * this.cols + cx;
+                    if (!this.walkable[ladoX] || !this.walkable[ladoY]) continue;
+                    if (this.parapeito(atual, ladoX) || this.parapeito(atual, ladoY)) continue;
                 }
 
                 const passo = (dx !== 0 && dy !== 0 ? 1.4142 : 1)

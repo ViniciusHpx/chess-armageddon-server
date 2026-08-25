@@ -153,10 +153,31 @@ export class World {
         return this.mask.isWater(centro.x, centro.y);
     }
 
+    /** Y do centro da elipse para um `y` de sprite qualquer, no rank atual. */
+    private centroY(actor: Actor, y: number): number {
+        return y + actor.rank.size.height / 2 - actor.collisionRx + (actor.collisionRy * 4) / 3;
+    }
+
     /** O personagem cabe nesta posição, considerando a elipse dele? */
     private canStand(actor: Actor, x: number, y: number): boolean {
-        const centroY = y + actor.rank.size.height / 2 - actor.collisionRx + (actor.collisionRy * 4) / 3;
-        return this.mask.canStand(x, centroY, actor.collisionRx, actor.collisionRy);
+        return this.mask.canStand(x, this.centroY(actor, y), actor.collisionRx, actor.collisionRy);
+    }
+
+    /**
+     * A posição de agora é aceitável vindo da última válida?
+     *
+     * Além de caber (`canStand`), o passo do tick inteiro tem de respeitar o
+     * parapeito da ponte. O movimento já garante isso em `resolveMove`, mas a
+     * SEPARAÇÃO entre personagens e o clamp da borda escrevem posição direto —
+     * sem esta checagem daria para subir no meio da ponte sendo empurrado por
+     * um aliado encostado, que é justamente a entrada lateral que se fechou.
+     */
+    private posicaoAceita(actor: Actor, x: number, y: number): boolean {
+        if (!this.canStand(actor, x, y)) return false;
+        return this.mask.canCross(
+            actor.lastValidX, this.centroY(actor, actor.lastValidY),
+            x, this.centroY(actor, y),
+        );
     }
 
     /**
@@ -474,7 +495,7 @@ export class World {
             // alguém para dentro da parede. Aqui a última posição válida é a
             // rede de segurança — sem isso dava para prensar um jogador contra
             // a muralha e passar por ela.
-            if (this.canStand(actor, actor.x, actor.y)) {
+            if (this.posicaoAceita(actor, actor.x, actor.y)) {
                 actor.lastValidX = actor.x;
                 actor.lastValidY = actor.y;
             } else {

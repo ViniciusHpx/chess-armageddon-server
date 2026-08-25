@@ -58,9 +58,18 @@ export class CollisionMask {
     /** 1 bit por pixel: 1 = água. Subconjunto de `bits`. */
     private readonly water: Uint8Array;
 
-    private constructor(bits: Uint8Array, water: Uint8Array) {
+    /**
+     * 1 bit por pixel: 1 = tabuleiro de ponte. Subconjunto de `bits` e
+     * disjunto de `water` — a ponte é chão normal (velocidade cheia, sem
+     * `WATER_SPEED_FACTOR`), e o que a distingue é só a proibição de
+     * `canCross`. Quem pinta é `scripts/paint-bridges.mjs`.
+     */
+    private readonly bridge: Uint8Array;
+
+    private constructor(bits: Uint8Array, water: Uint8Array, bridge: Uint8Array) {
         this.bits = bits;
         this.water = water;
+        this.bridge = bridge;
     }
 
     /** Instância única do processo; ver `load()`. */
@@ -101,12 +110,17 @@ export class CollisionMask {
             const total = png.width * png.height;
             const bits = new Uint8Array(Math.ceil(total / 8));
             const water = new Uint8Array(Math.ceil(total / 8));
+            const bridge = new Uint8Array(Math.ceil(total / 8));
             let nAgua = 0;
+            let nPonte = 0;
 
             for (let i = 0; i < total; i++) {
                 // Mesmo critério do cliente: branco é chão, azul é água, e
-                // dá para andar nos dois.
+                // dá para andar nos dois. O vermelho (255,0,0) é o tabuleiro
+                // da ponte: também é chão — daí ele entrar em `chao` —, só que
+                // marcado, para `canCross` recusar o passo vindo da água.
                 const chao = png.data[i * 4] > 128;
+                const ponte = chao && png.data[i * 4 + 1] <= 128;
                 const agua = !chao && png.data[i * 4 + 2] > 128;
 
                 if (chao || agua) bits[i >> 3] |= 1 << (i & 7);
@@ -114,13 +128,18 @@ export class CollisionMask {
                     water[i >> 3] |= 1 << (i & 7);
                     nAgua++;
                 }
+                if (ponte) {
+                    bridge[i >> 3] |= 1 << (i & 7);
+                    nPonte++;
+                }
             }
 
             console.log(
                 `máscara de colisão carregada de ${arquivo}` +
-                (nAgua > 0 ? ` (${((100 * nAgua) / total).toFixed(1)}% de água)` : " (sem água)"),
+                (nAgua > 0 ? ` (${((100 * nAgua) / total).toFixed(1)}% de água` : " (sem água") +
+                (nPonte > 0 ? `, ${nPonte} px de ponte)` : ", sem ponte)"),
             );
-            return new CollisionMask(bits, water);
+            return new CollisionMask(bits, water, bridge);
         }
 
         throw new Error(
@@ -143,6 +162,53 @@ export class CollisionMask {
 
         const i = py * this.halfWidth + px;
         return (this.water[i >> 3] & (1 << (i & 7))) !== 0;
+    }
+
+    /**
+     * O pixel é tabuleiro de ponte?
+     *
+     * Mesma consulta de bit da água. A ponte NÃO é um terreno especial para
+     * andar: velocidade cheia, colisão igual. O que ela tem é a regra de
+     * `canCross`.
+     */
+    isBridge(x: number, y: number): boolean {
+        let px = Math.floor(x);
+        const py = Math.floor(y);
+
+        if (px < 0 || py < 0 || px >= this.width || py >= this.height) return false;
+        if (px >= this.halfWidth) px = this.width - 1 - px;
+
+        const i = py * this.halfWidth + px;
+        return (this.bridge[i >> 3] & (1 << (i & 7))) !== 0;
+    }
+
+    /**
+     * Dá para ir DAQUI até ALI, olhando só a classe do terreno?
+     *
+     * A única transição proibida do mapa: **água <-> ponte**. Quem está no rio
+     * não sobe no meio do tabuleiro pela lateral, e quem está no tabuleiro não
+     * cai na água de lado — é o parapeito, e ele vale nos dois sentidos porque
+     * uma regra de mão única deixaria o personagem entalado entre as duas
+     * classes.
+     *
+     * O que continua livre é tudo o que interessa: terra <-> ponte (a
+     * ENTRADA, nas duas cabeceiras), terra <-> água (entrar e sair do rio em
+     * qualquer margem) e cada classe consigo mesma (atravessar a ponte
+     * inteira, nadar o rio inteiro).
+     *
+     * Os dois pontos são CENTROS DE ELIPSE, a mesma origem de `inWater`: quem
+     * decide é onde o personagem está, não onde está o ombro dele — assim o
+     * corpo pode encostar na ponte sem que o passo seja recusado, e ninguém
+     * fica preso na borda.
+     *
+     * Custo: duas consultas de bit no caso comum (as duas classes iguais).
+     */
+    canCross(fromX: number, fromY: number, toX: number, toY: number): boolean {
+        const daPonte = this.isBridge(fromX, fromY);
+        const praPonte = this.isBridge(toX, toY);
+        if (daPonte === praPonte) return true;
+
+        return daPonte ? !this.isWater(toX, toY) : !this.isWater(fromX, fromY);
     }
 
     /** O pixel é caminhável? Fora do mapa conta como bloqueado. */
@@ -207,16 +273,34 @@ export class CollisionMask {
         x: number, y: number, dx: number, dy: number,
         offsetY: number, rx: number, ry: number,
     ): number {
-        if (this.canStand(x + dx, y + dy + offsetY, rx, ry)) return 1;
+        const cy = y + offsetY;
+        if (this.aceita(x, cy, x + dx, cy + dy, rx, ry)) return 1;
 
         let baixo = 0;
         let alto = 1;
         for (let i = 0; i < 4; i++) {
             const meio = (baixo + alto) / 2;
-            if (this.canStand(x + dx * meio, y + dy * meio + offsetY, rx, ry)) baixo = meio;
+            if (this.aceita(x, cy, x + dx * meio, cy + dy * meio, rx, ry)) baixo = meio;
             else alto = meio;
         }
         return baixo;
+    }
+
+    /**
+     * O destino serve como próximo passo, vindo daqui?
+     *
+     * Junta as duas perguntas que todo candidato de movimento tem de responder:
+     * o corpo cabe lá (`canStand`) e o passo é permitido (`canCross`). Todas
+     * as coordenadas são CENTROS DE ELIPSE.
+     *
+     * Fica no mesmo lugar de propósito: `resolveMove` é o funil por onde passa
+     * todo movimento dos dois lados — jogador, bot, empurrão de golpe, dash —,
+     * então a regra da ponte não precisa ser repetida em lugar nenhum.
+     */
+    private aceita(
+        deX: number, deY: number, x: number, y: number, rx: number, ry: number,
+    ): boolean {
+        return this.canStand(x, y, rx, ry) && this.canCross(deX, deY, x, y);
     }
 
     /**
@@ -230,6 +314,10 @@ export class CollisionMask {
      * A posição inválida nunca chega a ser aceita: quem chama grava o retorno,
      * então não existe "andou e voltou" (o teleporte/jitter que a correção a
      * posteriori causaria).
+     *
+     * O parapeito da ponte (`canCross`) entra aqui como qualquer parede: quem
+     * vem nadando encosta na lateral do tabuleiro e desliza por ela, sem
+     * subir. Não há caminho de movimento que escape deste método.
      *
      * @param offsetY Distância de `y` até o centro da elipse (constante do rank).
      */
@@ -257,7 +345,9 @@ export class CollisionMask {
                 const ang = (i / 8) * Math.PI * 2;
                 const px = x + Math.cos(ang) * raio;
                 const py = y + Math.sin(ang) * raio;
-                if (this.canStand(px, py + offsetY, rx, ry)) return { x: px, y: py };
+                // O resgate respeita o parapeito: quem foi espremido contra a
+                // margem sai pela água, não aparecendo em cima da ponte.
+                if (this.aceita(x, y + offsetY, px, py + offsetY, rx, ry)) return { x: px, y: py };
             }
         }
         return undefined;
@@ -280,7 +370,9 @@ export class CollisionMask {
         const dy = nextY - prevY;
 
         // Caminho livre: nada a resolver (o caso esmagadoramente mais comum).
-        if (this.canStand(nextX, nextY + offsetY, rx, ry)) return { x: nextX, y: nextY };
+        if (this.aceita(prevX, prevY + offsetY, nextX, nextY + offsetY, rx, ry)) {
+            return { x: nextX, y: nextY };
+        }
 
         // Bateu. Três candidatos: seguir na diagonal até onde couber, deslizar
         // em X ou deslizar em Y — cada um levado até encostar. Vence o que
