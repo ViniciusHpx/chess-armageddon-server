@@ -73,6 +73,18 @@ export class ActorState extends Schema {
      */
     @type("uint8") dashCd: number = 0;
 
+    /**
+     * Travessia de parede em curso (dash do cavalo).
+     *
+     * Quem decide é o servidor, e a previsão do cliente PRECISA saber: se cada
+     * lado decidisse sozinho e discordasse — por um pixel de máscara ou pela
+     * diferença de posição do RTT —, um atravessaria e o outro não, e a
+     * reconciliação prenderia o boneco contra a parede até o dash seguinte.
+     *
+     * Fica em `false` nos bots, que não são previstos por ninguém.
+     */
+    @type("boolean") dashPhasing: boolean = false;
+
     @type("boolean") charging: boolean = false;
     /** Progresso da carga em 0..100 (float compactado para 1 byte). */
     @type("uint8") chargeRatio: number = 0;

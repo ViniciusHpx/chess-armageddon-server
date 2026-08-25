@@ -128,6 +128,16 @@ export class Actor {
      * antes de o dash começar, e a borda do mapa continua valendo.
      */
     dashPhasing = false;
+    /**
+     * Ponto de chegada aprovado para a travessia, guardado no início do dash.
+     *
+     * O dash é um movimento contínuo, mas empurrão de golpe ou separação podem
+     * desviá-lo no meio do voo. Se a posição final sair inválida, é para AQUI
+     * que o cavalo vai — o ponto que passou pela `canStand` com a elipse
+     * inteira. Assim ele nunca termina (nem meio) dentro da estrutura.
+     */
+    dashTargetX = 0;
+    dashTargetY = 0;
     /** Direção do dash, unitária. Congelada no início: virar no meio do dash
      *  quebraria a previsão do cliente, que só sabe a direção do começo. */
     dashDirX = 0;

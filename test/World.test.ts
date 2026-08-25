@@ -1542,6 +1542,41 @@ describe("World (simulação)", () => {
         assert.strictEqual(cavalo.dashPhasing, false, "a travessia tem de acabar com o dash");
     });
 
+    it("a travessia termina no ponto aprovado mesmo levando empurrão", () => {
+        const world = new World();
+        const cavalo = world.addPlayer("a", "ally", "A");
+        cavalo.setRank("HORSE");
+
+        const ponto = acheParede(world, cavalo, true);
+        assert.ok(ponto);
+
+        cavalo.teleport(ponto!.x, ponto!.y);
+        cavalo.inputDx = 1;
+        cavalo.inputDy = 0;
+        cavalo.dashReadyAt = 0;
+        assert.strictEqual(world.requestDash(cavalo), true);
+        cavalo.inputDx = 0;
+
+        assert.strictEqual(cavalo.dashPhasing, true, "devia ter saído atravessando");
+
+        // Golpe no meio do voo: o empurrão tira o cavalo da linha do dash.
+        world.tick(TICK_MS);
+        cavalo.knockbackVx = -600;
+        cavalo.knockbackVy = 400;
+        advance(world, 600);
+
+        const centro = cavalo.ellipseCenter();
+        assert.ok(
+            world.mask.canStand(centro.x, centro.y, cavalo.collisionRx, cavalo.collisionRy),
+            `terminou em posição inválida (${cavalo.x}, ${cavalo.y})`,
+        );
+        assert.ok(
+            Math.hypot(cavalo.x - ponto!.x, cavalo.y - ponto!.y) > DASH_DISTANCE / 2,
+            "não pode voltar para o ponto de partida",
+        );
+        assert.strictEqual(cavalo.dashPhasing, false);
+    });
+
     it("as outras peças continuam paradas pela mesma estrutura", () => {
         const world = new World();
         const cavalo = world.addPlayer("a", "ally", "A");

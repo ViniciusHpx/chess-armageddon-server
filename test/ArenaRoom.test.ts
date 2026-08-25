@@ -273,6 +273,38 @@ describe("ArenaRoom", () => {
         assert.strictEqual(humanos, 0);
     });
 
+    it("a sala some quando o último jogador sai de propósito", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", { bots: 1 });
+        const client = await colyseus.connectTo(room);
+        await waitTicks(2);
+
+        assert.strictEqual((await matchMaker.query({ name: "arena" })).length, 1);
+
+        // Saída consentida: é o que o botão MENU (e o `pagehide`) manda.
+        await client.leave(true);
+        await waitTicks(20);
+
+        assert.strictEqual(
+            (await matchMaker.query({ name: "arena" })).length, 0,
+            "sala sem jogador nenhum não pode continuar na lista",
+        );
+    });
+
+    it("a sala continua enquanto sobrar um jogador", async () => {
+        const room = await colyseus.createRoom<ArenaState>("arena", { bots: 0 });
+        const a = await colyseus.connectTo(room, { name: "A" });
+        const b = await colyseus.connectTo(room, { name: "B" });
+        await waitTicks(2);
+
+        await a.leave(true);
+        await waitTicks(10);
+
+        assert.strictEqual((await matchMaker.query({ name: "arena" })).length, 1);
+        assert.strictEqual(room.metadata.players, 1, "o placar do lobby tem de refletir quem ficou");
+        assert.ok(room.state.actors.get(b.sessionId), "quem ficou continua na simulação");
+        assert.strictEqual(room.state.actors.has(a.sessionId), false, "quem saiu some da sala");
+    });
+
     it("a revanche cria uma sala só, mesmo com dois pedidos juntos", async () => {
         const room = await colyseus.createRoom<ArenaState>("arena", { bots: 1 });
         const a = await colyseus.connectTo(room, { name: "A" });

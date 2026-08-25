@@ -332,6 +332,8 @@ export class World {
         // chegam neste mesmo ponto (`requestDash` e `tryBotDodge`).
         actor.dashPhasing = canPhaseDash(actor.rankKey)
             && this.dashLandsFree(actor, dirX, dirY);
+        actor.dashTargetX = actor.x + dirX * DASH_DISTANCE;
+        actor.dashTargetY = actor.y + dirY * DASH_DISTANCE;
         actor.dashUntil = this.now + DASH_TIMEOUT_MS;
         actor.dashRemaining = DASH_DISTANCE;
         // O cooldown conta do INÍCIO do dash, não do fim: assim mexer na
@@ -441,7 +443,19 @@ export class World {
             // chegada, que foi validada antes de o dash sair.
             if (actor.dashPhasing) {
                 if (actor.isDashing(this.now)) continue;
+
                 actor.dashPhasing = false;
+
+                // Acabou a travessia fora de lugar (levou golpe no meio do voo,
+                // foi separado de alguém): vai para o ponto que foi aprovado
+                // antes de sair. Sem isto a rede de segurança abaixo o
+                // devolveria ao ponto de PARTIDA, e ele ficaria encostado na
+                // parede como se não tivesse atravessado.
+                if (!this.canStand(actor, actor.x, actor.y)
+                    && this.canStand(actor, actor.dashTargetX, actor.dashTargetY)) {
+                    actor.x = actor.dashTargetX;
+                    actor.y = actor.dashTargetY;
+                }
             }
 
             // A separação entre personagens e o clamp da borda podem empurrar

@@ -310,6 +310,8 @@ export class ArenaRoom extends Room {
         s.dashCd = actor.isBot
             ? 0
             : Math.round(actor.dashCooldownRatio(this.world.now, DASH_COOLDOWN_MS) * 100);
+        // Só para humanos: é a previsão do dono do ator que consome isto.
+        s.dashPhasing = actor.isBot ? false : actor.dashPhasing;
         s.charging = actor.charging;
         s.chargeRatio = Math.round(actor.chargeRatio * 100);
 

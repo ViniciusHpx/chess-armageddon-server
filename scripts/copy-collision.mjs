@@ -1,8 +1,12 @@
 /**
  * Copia a máscara de colisão do cliente para junto do servidor.
  *
- * A fonte é o asset do cliente (`chess-armageddon/assets/collision.png`): é ele
- * que o jogo desenha e é dele que o modo offline lê a colisão.
+ * A fonte é o asset do cliente, e QUAL asset é ele quem diz: o caminho sai de
+ * `COLLISION_PATH` (`chess-armageddon/src/constants/Scenario.js`), o mesmo que
+ * o `preload` da cena carrega. Antes estava escrito à mão aqui, o arquivo foi
+ * renomeado no cliente e a cópia do servidor congelou numa versão antiga — os
+ * dois lados passaram a colidir contra mapas diferentes, e ninguém percebeu
+ * porque o script avisava e saía com sucesso.
  *
  * A cópia em `chess-armageddon-server/assets/` é VERSIONADA de propósito (28 KB):
  * os dois projetos têm deploys separados, e no host do servidor a pasta do
@@ -17,12 +21,28 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const raiz = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const origem = path.resolve(raiz, "../chess-armageddon/assets/collision.png");
+const cliente = path.resolve(raiz, "../chess-armageddon");
+
+// O cliente é a fonte de verdade do nome do arquivo também. Lido como texto
+// porque o projeto do cliente não tem package.json: um `import()` do módulo
+// ESM dele quebraria (o Node trataria o .js como CommonJS).
+const scenario = fs.readFileSync(
+    path.join(cliente, "src/constants/Scenario.js"), "utf8",
+);
+const achado = scenario.match(/COLLISION_PATH\s*=\s*['"]([^'"]+)['"]/);
+
+if (!achado) {
+    console.error("erro: não achei COLLISION_PATH em src/constants/Scenario.js");
+    process.exit(1);
+}
+
+const origem = path.resolve(cliente, achado[1]);
 const destino = path.resolve(raiz, "assets/collision.png");
 
 if (!fs.existsSync(origem)) {
-    console.warn(`aviso: ${origem} não existe; mantendo ${destino} como está`);
-    process.exit(0);
+    console.error(`erro: ${origem} não existe.`);
+    console.error("Rode este script com o repositório do cliente ao lado, e commite a cópia.");
+    process.exit(1);
 }
 
 fs.mkdirSync(path.dirname(destino), { recursive: true });
