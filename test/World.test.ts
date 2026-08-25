@@ -1,6 +1,7 @@
 import assert from "assert";
 
 import { World } from "../src/sim/World.js";
+import { CollisionMask } from "../src/sim/CollisionMask.js";
 import { Actor } from "../src/sim/Actor.js";
 import {
     RANKS, TICK_MS, DAMAGE_NORMAL, DAMAGE_CHARGED, HIT_INVULN_MS, BOT_RESPAWN_DELAY_MS, INPUT_TIMEOUT_MS,
@@ -1611,12 +1612,19 @@ describe("World (simulação)", () => {
         assert.ok(ponto, "não achei parede grossa o bastante no mapa");
 
         cavalo.teleport(ponto!.x, ponto!.y);
-        const parou = dashParaLeste(world, cavalo);
 
-        assert.ok(
-            parou < ponto!.x + DASH_DISTANCE / 2,
-            `entrou na estrutura sem ter onde cair: ${ponto!.x} -> ${parou}`,
-        );
+        cavalo.inputDx = 1;
+        cavalo.inputDy = 0;
+        cavalo.dashReadyAt = 0;
+        assert.strictEqual(world.requestDash(cavalo), true);
+        cavalo.inputDx = 0;
+
+        // Sem chegada aprovada não há travessia. O dash em si continua
+        // acontecendo (e pode deslizar pela parede, como qualquer movimento) —
+        // o que não pode é entrar na estrutura.
+        assert.strictEqual(cavalo.dashPhasing, false, "não devia ter saído atravessando");
+
+        advance(world, 600);
 
         const centro = cavalo.ellipseCenter();
         assert.ok(
@@ -1665,6 +1673,132 @@ describe("World (simulação)", () => {
         }
         return melhor;
     }
+
+    it("atravessa o rio andando, sem parar e sem precisar de resgate", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+
+        // Espia o resgate: ele é a última linha de defesa e NÃO pode ser o que
+        // faz alguém atravessar o rio. Se aparecer aqui, a colisão travou.
+        const proto = CollisionMask.prototype as unknown as {
+            nearestFree: (...args: unknown[]) => unknown;
+        };
+        const original = proto.nearestFree;
+        let resgates = 0;
+        proto.nearestFree = function (this: unknown, ...args: unknown[]) {
+            resgates++;
+            return original.apply(this, args);
+        };
+
+        try {
+            for (const rank of ["PAWN", "QUEEN"] as const) {
+                actor.setRank(rank);
+
+                for (const y of [960, 1080, 1200, 1320]) {
+                    // Partida válida para a peça atual (a rainha é bem maior
+                    // que o peão). Usar o próprio resgate para POSICIONAR é
+                    // legítimo; o que se mede é a caminhada depois disso.
+                    const alturaCentro = actor.rank.size.height / 2
+                        - actor.collisionRx + (actor.collisionRy * 4) / 3;
+                    const partida = world.mask.nearestFree(
+                        1050, y, alturaCentro, actor.collisionRx, actor.collisionRy,
+                    );
+                    assert.ok(partida, `sem chão livre para começar em y=${y}`);
+
+                    actor.teleport(partida!.x, partida!.y);
+                    const resgatesAntes = resgates;
+                    let parado = 0;
+
+                    for (let t = 0; t < 200; t++) {
+                        world.setInput(actor, 1, 0, t + 1);
+                        actor.lastInputAt = world.now;
+                        const antes = actor.x;
+                        world.tick(TICK_MS);
+                        if (Math.abs(actor.x - antes) < 0.5) parado++;
+                    }
+
+                    assert.ok(
+                        actor.x > 2000,
+                        `${rank} não atravessou o rio em y=${y}: parou em x=${actor.x.toFixed(0)}`,
+                    );
+                    assert.ok(
+                        parado < 20,
+                        `${rank} ficou ${parado}/200 ticks parado em y=${y}`,
+                    );
+                    assert.strictEqual(
+                        resgates, resgatesAntes,
+                        `${rank} precisou do resgate para atravessar em y=${y}`,
+                    );
+                }
+            }
+        } finally {
+            proto.nearestFree = original;
+        }
+
+    });
+
+    it("a máscara não tem respingo bloqueado dentro da água", () => {
+        // Um bloco bloqueado menor que um corpo, cercado só de água, é sujeira
+        // da arte — e proíbe uma área do TAMANHO DO CORPO, porque as nove
+        // sondas de `canStand` batem nele de longe. Era o que travava quem
+        // atravessava o rio. Quem limpa é `npm run paint:water`; este teste
+        // garante que a máscara publicada está limpa.
+        const world = new World();
+        const areaCorpo = Math.PI * 50 * 25;
+
+        const largura = HALF_WORLD_WIDTH;
+        const altura = WORLD_HEIGHT;
+        const visto = new Uint8Array(largura * altura);
+        const fila = new Int32Array(largura * altura);
+
+        const bloqueado = (i: number) => {
+            const x = i % largura;
+            const y = (i / largura) | 0;
+            return !world.mask.isWalkable(x + 0.5, y + 0.5);
+        };
+        const agua = (i: number) => {
+            const x = i % largura;
+            const y = (i / largura) | 0;
+            return world.mask.isWater(x + 0.5, y + 0.5);
+        };
+
+        let sujos = 0;
+        for (let inicio = 0; inicio < visto.length; inicio++) {
+            if (visto[inicio] || !bloqueado(inicio)) continue;
+
+            let cabeca = 0;
+            let cauda = 0;
+            fila[cauda++] = inicio;
+            visto[inicio] = 1;
+            let soAgua = true;
+
+            while (cabeca < cauda) {
+                const i = fila[cabeca++];
+                const x = i % largura;
+                const y = (i / largura) | 0;
+                const vizinhos = [
+                    x > 0 ? i - 1 : -1,
+                    x < largura - 1 ? i + 1 : -1,
+                    y > 0 ? i - largura : -1,
+                    y < altura - 1 ? i + largura : -1,
+                ];
+                for (const v of vizinhos) {
+                    if (v < 0) continue;
+                    if (!bloqueado(v)) {
+                        if (!agua(v)) soAgua = false;
+                        continue;
+                    }
+                    if (visto[v]) continue;
+                    visto[v] = 1;
+                    fila[cauda++] = v;
+                }
+            }
+
+            if (soAgua && cauda <= areaCorpo) sujos++;
+        }
+
+        assert.strictEqual(sujos, 0, `${sujos} respingos bloqueados dentro da água — rode npm run paint:water`);
+    });
 
     it("dentro da água todo mundo anda a 80%, e volta ao normal ao sair", () => {
         const world = new World();

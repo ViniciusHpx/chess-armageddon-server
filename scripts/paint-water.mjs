@@ -169,7 +169,76 @@ for (let i = 0; i < total; i++) {
     praia++;
 }
 
+// 4. sujeira: bloco bloqueado minúsculo cercado só de água.
+//
+// A arte da água tem respingos escuros (pedrinhas, sombra, espuma) que a
+// máscara marcava como parede. Cada um deles é invisível para quem joga e
+// bloqueia uma área do TAMANHO DO CORPO — as nove sondas de `canStand` batem
+// no respingo de até meio corpo de distância. Era isso que travava quem
+// atravessava o rio: parede nenhuma na tela, personagem parado.
+//
+// O corte é a área da elipse do PEÃO (a menor peça): um bloco menor que um
+// corpo não é ilha, é sujeira — e a zona morta que ele cria é maior que ele
+// mesmo. Ilha de verdade (as grandes, e qualquer uma que encoste em terra)
+// não é tocada.
+const AREA_CORPO = Math.PI * 50 * 25;
+
+const ehChao = (i) => mascara.data[i * 4] > 128;
+const bloqueado = (i) => !ehChao(i) && !ehAgua(i);
+const componente = new Int32Array(total).fill(-1);
+let sujeira = 0;
+
+for (let inicio = 0; inicio < total; inicio++) {
+    if (!bloqueado(inicio) || componente[inicio] >= 0) continue;
+
+    let cabeca = 0;
+    let cauda = 0;
+    fila[cauda++] = inicio;
+    componente[inicio] = inicio;
+    let sóAgua = true;
+
+    while (cabeca < cauda) {
+        const i = fila[cabeca++];
+        const x = i % W;
+        const y = (i / W) | 0;
+        const vizinhos = [
+            x > 0 ? i - 1 : -1,
+            x < W - 1 ? i + 1 : -1,
+            y > 0 ? i - W : -1,
+            y < H - 1 ? i + W : -1,
+        ];
+        for (const v of vizinhos) {
+            if (v < 0) continue;
+            if (!bloqueado(v)) {
+                // Encostou em chão: é margem/estrutura de verdade, fica.
+                if (ehChao(v)) sóAgua = false;
+                continue;
+            }
+            if (componente[v] >= 0) continue;
+            componente[v] = inicio;
+            fila[cauda++] = v;
+        }
+    }
+
+    if (!sóAgua || cauda > AREA_CORPO) continue;
+
+    for (let k = 0; k < cauda; k++) {
+        const i = fila[k];
+        mascara.data[i * 4] = 0;
+        mascara.data[i * 4 + 1] = 0;
+        mascara.data[i * 4 + 2] = 255;
+        mascara.data[i * 4 + 3] = 255;
+        sujeira++;
+    }
+}
+
 fs.writeFileSync(maskPath, PNG.sync.write(mascara));
 console.log(`água pintada em ${maskPath}`);
-console.log(`  ${pintados} px de corpo d'água + ${praia} px de praia (${(100 * (pintados + praia) / total).toFixed(1)}% do mapa)`);
+let azul = 0;
+for (let i = 0; i < total; i++) if (ehAgua(i)) azul++;
+
+console.log(
+    `  +${pintados} px de corpo d'água, +${praia} px de praia, +${sujeira} px de respingo` +
+    ` — total de água: ${azul} px (${((100 * azul) / total).toFixed(1)}% do mapa)`,
+);
 console.log("Rode `npm run sync:mask` em seguida e commite as duas cópias.");

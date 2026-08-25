@@ -296,10 +296,83 @@ export class CollisionMask {
         const avancoX = tX * Math.abs(dx);
         const avancoY = tY * Math.abs(dy);
 
+
+        const melhorAvanco = Math.max(avancoDiag, avancoX, avancoY);
+        if (melhorAvanco < SLIDE_MIN_AVANCO) {
+            const desvio = this.slideAround(prevX, prevY, dx, dy, offsetY, rx, ry);
+            if (desvio) return desvio;
+        }
+
         if (avancoDiag >= avancoX && avancoDiag >= avancoY) {
             return { x: prevX + dx * tDiag, y: prevY + dy * tDiag };
         }
         if (avancoX >= avancoY) return { x: prevX + dx * tX, y: prevY };
         return { x: prevX, y: prevY + dy * tY };
     }
+
+    /**
+     * Deslize pela superfície quando nem a diagonal nem os eixos avançam.
+     *
+     * Os candidatos de cima só sabem cortar o passo em X e em Y. Contra uma
+     * borda INCLINADA — a margem de uma ilha, a quina de uma muralha — quem
+     * anda numa direção só (a tecla é um eixo puro) fica com os três candidatos
+     * zerados e para seco, mesmo tendo a superfície inteira livre ao lado.
+     *
+     * Aqui o passo é GIRADO em `SLIDE_ANGLES` para os dois lados, mantendo o
+     * mesmo tamanho, e vence o que mais avança NA DIREÇÃO PEDIDA. Contra uma
+     * parede reta de frente todos os giros continuam batendo nela e o resultado
+     * é a parada seca de sempre — deslizar só acontece quando existe superfície
+     * para deslizar.
+     *
+     * Custo: só roda no quadro em que o personagem ficaria parado, e no máximo
+     * quatro bisseções. O deslocamento é sempre <= o passo do quadro, então não
+     * existe correção grande nem salto.
+     */
+    private slideAround(
+        prevX: number, prevY: number, dx: number, dy: number,
+        offsetY: number, rx: number, ry: number,
+    ): { x: number; y: number } | undefined {
+        const passo = Math.hypot(dx, dy);
+        if (passo < SLIDE_MIN_AVANCO) return undefined;
+
+        const base = Math.atan2(dy, dx);
+        const dirX = dx / passo;
+        const dirY = dy / passo;
+
+        let melhor: { x: number; y: number } | undefined;
+        let melhorProjecao = SLIDE_MIN_AVANCO;
+
+        for (const desvio of SLIDE_ANGLES) {
+            for (const lado of [1, -1]) {
+                const ang = base + lado * desvio;
+                const gx = Math.cos(ang) * passo;
+                const gy = Math.sin(ang) * passo;
+
+                const t = this.maxAlong(prevX, prevY, gx, gy, offsetY, rx, ry);
+                if (t <= 0) continue;
+
+                // Projeção no rumo original: entre dois desvios livres, vale
+                // mais o que leva o personagem para onde ele queria ir.
+                const projecao = (gx * dirX + gy * dirY) * t;
+                if (projecao <= melhorProjecao) continue;
+
+                melhorProjecao = projecao;
+                melhor = { x: prevX + gx * t, y: prevY + gy * t };
+            }
+        }
+
+        return melhor;
+    }
 }
+
+/**
+ * Desvios testados ao deslizar, em radianos (30° e 60°).
+ *
+ * Dois níveis bastam: 30° cobre a borda quase paralela, 60° a borda bem
+ * inclinada. Passar de 60° já seria andar quase de lado em relação ao que o
+ * jogador pediu.
+ */
+const SLIDE_ANGLES = [Math.PI / 6, Math.PI / 3];
+
+/** Avanço abaixo do qual o passo conta como "não saiu do lugar", em px. */
+const SLIDE_MIN_AVANCO = 0.05;
