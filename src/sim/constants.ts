@@ -404,11 +404,29 @@ export const CHARGE_MOVE_FACTOR = 0.45;
  * simulação e modo offline divergem. Os estados são exclusivos — não se
  * carrega durante o golpe —, mas a ordem deixa isso explícito.
  */
-export function movementFactor(attacking: boolean, charging: boolean): number {
-    if (attacking) return ATTACK_MOVE_FACTOR;
-    if (charging) return CHARGE_MOVE_FACTOR;
-    return 1;
+export function movementFactor(
+    attacking: boolean, charging: boolean, inWater = false,
+): number {
+    let fator = 1;
+    if (attacking) fator = ATTACK_MOVE_FACTOR;
+    else if (charging) fator = CHARGE_MOVE_FACTOR;
+
+    // Terreno multiplica o estado de combate, não o substitui: atacar dentro
+    // d'água é 0,6 × 0,8. Como o fator é sempre recalculado a partir da
+    // `rank.speed`, entrar e sair da água não acumula nada e nada precisa ser
+    // "restaurado" — fora da água a conta simplesmente não tem o 0,8.
+    return inWater ? fator * WATER_SPEED_FACTOR : fator;
 }
+
+/**
+ * Fração da velocidade dentro da água (rio e mar).
+ *
+ * A água é NAVEGÁVEL por todo mundo — jogador, bot, qualquer peça —, só custa
+ * 20% de velocidade. Quem diz onde é água é a máscara de colisão
+ * (`CollisionMask.isWater`), pela cor do pixel; não existe zona nem coordenada
+ * escrita em código.
+ */
+export const WATER_SPEED_FACTOR = 0.8;
 
 /**
  * Apelidos dos extremos da escala, mantidos porque a IA raciocina com eles
@@ -597,6 +615,25 @@ export const BOT_UNSTICK_MS = 500;
  * pouco (30°) mantém ele raspando a mesma quina.
  */
 export const BOT_UNSTICK_ANGLE = 1.22;
+
+/**
+ * Desvios testados ao sair de uma quina, em radianos (70°, 110°, 150°).
+ *
+ * O contorno deixou de ser às cegas: o bot testa estes desvios contra a
+ * MÁSCARA, com o corpo dele, e anda para o primeiro que estiver livre. Antes
+ * ele saía sempre nos mesmos 70° — num canto fechado isso é parede também, e
+ * ele voltava a empacar até a janela seguinte. A escada vai do desvio suave ao
+ * quase-voltar, então em algum ponto ela acha a saída.
+ */
+export const BOT_UNSTICK_ANGLES = [1.22, 1.92, 2.62];
+
+/**
+ * Quanto o bot enxerga à frente ao escolher a saída, em px.
+ *
+ * Duas células de navegação: perto o bastante para a resposta valer agora,
+ * longe o bastante para não escolher um vão onde ele não cabe.
+ */
+export const BOT_UNSTICK_PROBE = 64;
 
 /** Margem das bordas em que o bot inverte o rumo. */
 export const BOT_EDGE_MARGIN = 100;

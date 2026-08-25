@@ -18,7 +18,7 @@
  * isso, um alvo inalcançável faria o A* varrer o mapa inteiro antes de desistir.
  */
 import { CollisionMask } from "./CollisionMask.js";
-import { RANKS, WORLD_HEIGHT, WORLD_WIDTH } from "./constants.js";
+import { RANKS, WATER_SPEED_FACTOR, WORLD_HEIGHT, WORLD_WIDTH } from "./constants.js";
 
 /** Lado da célula, em px. Ver "Resolução" acima antes de mexer. */
 export const NAV_CELL = 32;
@@ -29,7 +29,7 @@ export const NAV_CELL = 32;
  * O grid tem 8268 células, então o teto quase nunca é atingido; ele existe para
  * o pior caso não virar um pico de CPU dentro do tick.
  */
-const MAX_EXPANSOES = 4000;
+const MAX_EXPANSOES = 12000;
 
 /** Passo do teste de linha de visão, em px. Metade do corpo de um peão. */
 const LOS_PASSO = 24;
@@ -40,6 +40,16 @@ export class NavGrid {
 
     /** 1 = a peça cabe no centro da célula. */
     private readonly walkable: Uint8Array;
+
+    /**
+     * 1 = célula de água. Caminhável como qualquer outra, só que mais cara.
+     *
+     * Atravessar a nado custa `1 / WATER_SPEED_FACTOR` (1,25) por passo, que é
+     * exatamente o tempo a mais que se leva ali. Assim o A* prefere a ponte e a
+     * terra quando elas não são um desvio grande, e mergulha quando nadar
+     * realmente sai mais rápido — sem que a água vire barreira.
+     */
+    private readonly water: Uint8Array;
 
     /** Rótulo do componente conexo de cada célula; -1 = bloqueada. */
     private readonly component: Int16Array;
@@ -69,6 +79,7 @@ export class NavGrid {
 
         const total = this.cols * this.rows;
         this.walkable = new Uint8Array(total);
+        this.water = new Uint8Array(total);
         this.component = new Int16Array(total).fill(-1);
         this.gScore = new Float32Array(total);
         this.fScore = new Float32Array(total);
@@ -93,7 +104,11 @@ export class NavGrid {
             for (let cx = 0; cx < this.cols; cx++) {
                 const x = cx * NAV_CELL + NAV_CELL / 2;
                 const y = ry_ * NAV_CELL + NAV_CELL / 2;
-                if (this.mask.canStand(x, y, rx, ry)) this.walkable[ry_ * this.cols + cx] = 1;
+                if (!this.mask.canStand(x, y, rx, ry)) continue;
+
+                const i = ry_ * this.cols + cx;
+                this.walkable[i] = 1;
+                if (this.mask.isWater(x, y)) this.water[i] = 1;
             }
         }
 
@@ -259,7 +274,9 @@ export class NavGrid {
                     if (!this.walkable[ny * this.cols + cx]) continue;
                 }
 
-                const custo = this.gScore[atual] + (dx !== 0 && dy !== 0 ? 1.4142 : 1);
+                const passo = (dx !== 0 && dy !== 0 ? 1.4142 : 1)
+                    * (this.water[vizinho] ? CUSTO_AGUA : 1);
+                const custo = this.gScore[atual] + passo;
                 const visitado = this.visitCarimbo[vizinho] === carimbo;
                 if (visitado && custo >= this.gScore[vizinho]) continue;
 
@@ -349,6 +366,14 @@ export class NavGrid {
         return saida;
     }
 }
+
+/**
+ * Multiplicador de custo de uma célula de água.
+ *
+ * Sai da própria redução de velocidade: andar a 80% leva 1,25 vez mais tempo.
+ * Manter a heurística admissível depende de este número ser >= 1 (é).
+ */
+const CUSTO_AGUA = 1 / WATER_SPEED_FACTOR;
 
 const DIR_X = [1, -1, 0, 0, 1, 1, -1, -1];
 const DIR_Y = [0, 0, 1, -1, 1, -1, 1, -1];

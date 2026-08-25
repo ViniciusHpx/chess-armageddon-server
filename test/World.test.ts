@@ -15,7 +15,7 @@ import {
     DAMAGE_LIGHT, DAMAGE_MAX, AREA_MULT_LIGHT, AREA_MULT_MAX, KNOCKBACK_CHARGED_FACTOR,
     attackWindupMs, attackRecoveryMs, chargePower,
     CHARGED_ATTACK_ENABLED, BASE_HEAL_PER_SECOND, insideSpawnZone, DASH_DISTANCE,
-    canPhaseDash,
+    canPhaseDash, WATER_SPEED_FACTOR,
 } from "../src/sim/constants.js";
 
 /**
@@ -1020,14 +1020,19 @@ describe("World (simulação)", () => {
         alvo.invulnUntil = Number.MAX_SAFE_INTEGER;
 
         let cruzou = false;
-        let desceuAteAPonte = false;
+        let saiuDaLinhaReta = false;
         for (let i = 0; i < 900 && !cruzou; i++) {
             world.tick(TICK_MS);
-            if (bot.y > 600) desceuAteAPonte = true;
+            // Nadando ou pela ponte, o caminho nunca é a reta: ou ele desce
+            // até a travessia, ou entra na água. O que não pode é ficar
+            // empurrando a margem na mesma altura.
+            if (Math.abs(bot.y - 480) > 60) saiuDaLinhaReta = true;
+            const centro = bot.ellipseCenter();
+            if (world.mask.isWater(centro.x, centro.y)) saiuDaLinhaReta = true;
             if (bot.x > 1500) cruzou = true;
         }
 
-        assert.ok(desceuAteAPonte, "para achar a ponte ele precisa descer, não empurrar a margem");
+        assert.ok(saiuDaLinhaReta, "ele empurrou a margem em vez de procurar travessia");
         assert.ok(cruzou, `o bot ficou preso em (${bot.x.toFixed(0)}, ${bot.y.toFixed(0)})`);
     });
 
@@ -1632,6 +1637,144 @@ describe("World (simulação)", () => {
 
         assert.strictEqual(cavalo.dashPhasing, false, "borda não se atravessa");
         assert.ok(parou <= WORLD_WIDTH - halfW, `saiu do mapa: x=${parou}`);
+    });
+
+    /**
+     * Água mais próxima do castelo aliado onde a peça cabe inteira.
+     *
+     * "Mais próxima" porque é a água em que se entra andando a partir do
+     * pátio — a que interessa para medir velocidade e alcance.
+     */
+    function achaAgua(world: World, actor: Actor): { x: number; y: number } | undefined {
+        const alturaCentro = actor.rank.size.height / 2
+            - actor.collisionRx + (actor.collisionRy * 4) / 3;
+
+        let melhor: { x: number; y: number } | undefined;
+        let melhorDist = Infinity;
+
+        for (let y = 200; y < WORLD_HEIGHT - 200; y += 24) {
+            for (let x = 200; x < HALF_WORLD_WIDTH; x += 24) {
+                if (!world.mask.isWater(x, y + alturaCentro)) continue;
+                if (!world.mask.canStand(x, y + alturaCentro, actor.collisionRx, actor.collisionRy)) continue;
+
+                const d = Math.hypot(x - LIVRE_X, y - LIVRE_Y);
+                if (d >= melhorDist) continue;
+                melhorDist = d;
+                melhor = { x, y };
+            }
+        }
+        return melhor;
+    }
+
+    it("dentro da água todo mundo anda a 80%, e volta ao normal ao sair", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+
+        const agua = achaAgua(world, actor);
+        assert.ok(agua, "o mapa precisa ter água onde a peça caiba");
+
+        // Nadando: um tick de movimento horizontal.
+        actor.teleport(agua!.x, agua!.y);
+        world.setInput(actor, 1, 0, 1);
+        actor.lastInputAt = world.now;
+        const antesAgua = actor.x;
+        world.tick(TICK_MS);
+        const naAgua = actor.x - antesAgua;
+
+        // Em terra firme, o mesmo passo.
+        actor.teleport(LIVRE_X, LIVRE_Y);
+        world.setInput(actor, 1, 0, 2);
+        actor.lastInputAt = world.now;
+        const antesTerra = actor.x;
+        world.tick(TICK_MS);
+        const naTerra = actor.x - antesTerra;
+
+        assert.ok(naTerra > 0 && naAgua > 0, "os dois passos têm de andar para frente");
+        assert.ok(
+            Math.abs(naAgua / naTerra - WATER_SPEED_FACTOR) < 0.02,
+            `na água andou ${(naAgua / naTerra).toFixed(2)} do normal, esperado ${WATER_SPEED_FACTOR}`,
+        );
+    });
+
+    it("a água não acumula o freio nem altera a velocidade base", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        const agua = achaAgua(world, actor);
+        assert.ok(agua);
+
+        actor.teleport(agua!.x, agua!.y);
+        world.setInput(actor, 1, 0, 1);
+
+        const passos: number[] = [];
+        for (let i = 0; i < 5; i++) {
+            actor.lastInputAt = world.now;
+            actor.teleport(agua!.x, agua!.y);
+            const antes = actor.x;
+            world.tick(TICK_MS);
+            passos.push(actor.x - antes);
+        }
+
+        for (const passo of passos) {
+            assert.ok(
+                Math.abs(passo - passos[0]) < 0.01,
+                `o passo mudou dentro da água: ${passos.join(", ")}`,
+            );
+        }
+        assert.strictEqual(actor.rank.speed, RANKS.PAWN.speed, "a velocidade do rank é intocada");
+    });
+
+    it("a água é navegável: existe rota atravessando o rio", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        const agua = achaAgua(world, actor);
+        assert.ok(agua);
+
+        assert.strictEqual(
+            world.nav.canReach(LIVRE_X, LIVRE_Y, agua!.x, agua!.y), true,
+            "não dá para chegar à água a pé — ela virou barreira",
+        );
+    });
+
+    it("bot travado escolhe uma saída que a máscara aprova", () => {
+        const world = new World();
+        const bot = world.addBot("ally");
+        const alvo = world.addPlayer("b", "enemy", "B");
+
+        // Encosta o bot numa parede, com o alvo do outro lado dela.
+        let parede: { x: number; y: number } | undefined;
+        for (let y = 400; y < WORLD_HEIGHT - 400 && !parede; y += 32) {
+            for (let x = 300; x < HALF_WORLD_WIDTH - 300; x += 32) {
+                const alturaCentro = bot.rank.size.height / 2 - bot.collisionRx + (bot.collisionRy * 4) / 3;
+                if (!world.mask.canStand(x, y + alturaCentro, bot.collisionRx, bot.collisionRy)) continue;
+                if (world.mask.canStand(x + 96, y + alturaCentro, bot.collisionRx, bot.collisionRy)) continue;
+                parede = { x, y };
+                break;
+            }
+        }
+        assert.ok(parede, "não achei uma parede para encostar o bot");
+
+        bot.teleport(parede!.x, parede!.y);
+        alvo.teleport(parede!.x + 260, parede!.y);
+
+        // Deixa o relógio da sala andar e então marca o bot como "está aqui há
+        // uma janela inteira": é o estado que `checkStuck` enxerga em quem
+        // passou o tempo todo empurrando a parede.
+        advance(world, BOT_STUCK_CHECK_MS);
+        bot.teleport(parede!.x, parede!.y);
+        bot.progressX = bot.x;
+        bot.progressY = bot.y;
+        bot.progressAt = world.now - BOT_STUCK_CHECK_MS - 1;
+        world.tick(TICK_MS);
+
+        const centro = bot.ellipseCenter();
+        const destinoX = centro.x + Math.cos(bot.unstickAngle) * 64;
+        const destinoY = centro.y + Math.sin(bot.unstickAngle) * 64;
+
+        assert.ok(bot.unstickUntil > 0, "a travada devia ter sido detectada");
+        assert.ok(
+            world.nav.hasLineOfSight(centro.x, centro.y, destinoX, destinoY, bot.collisionRx, bot.collisionRy),
+            "a saída escolhida bate na parede",
+        );
     });
 
     it("o time vence ao bater o limite de abates, e a partida congela", () => {

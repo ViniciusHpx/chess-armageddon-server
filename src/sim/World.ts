@@ -31,7 +31,7 @@ import {
     SPAWN_ATTEMPTS, SPAWN_MIN_DISTANCE, SPAWN_ZONE,
     BOT_PATHS_PER_TICK, BOT_REPATH_MIN_MS, BOT_REPATH_TARGET_MOVE,
     BOT_STUCK_CHECK_MS, BOT_STUCK_MIN_PROGRESS, BOT_WAYPOINT_TOLERANCE,
-    BOT_UNSTICK_ANGLE, BOT_UNSTICK_MS,
+    BOT_UNSTICK_ANGLE, BOT_UNSTICK_ANGLES, BOT_UNSTICK_PROBE, BOT_UNSTICK_MS,
     BOT_DASH_COOLDOWN_MS, BOT_DODGE_CHANCE, BOT_DODGE_RANGE_SLACK, BOT_DODGE_REACTION_MS,
     DASH_COOLDOWN_MS, DASH_DISTANCE, DASH_INVULN_MS, DASH_SPEED, DASH_TIMEOUT_MS,
     DASH_STOP_PUSHBACK, BASE_HEAL_PER_SECOND, insideSpawnZone, canPhaseDash,
@@ -141,6 +141,18 @@ export class World {
      * mapa inteiro; com times de verdade isso fazia o jogador renascer dentro
      * do inimigo.
      */
+    /**
+     * O personagem está com o corpo na água?
+     *
+     * Uma consulta de bit no centro da elipse — o mesmo ponto que a colisão já
+     * usa. Vale para jogador e bot, sem estado guardado: a cada tick se olha
+     * onde ele está, então sair da água devolve a velocidade no tick seguinte.
+     */
+    private inWater(actor: Actor): boolean {
+        const centro = actor.ellipseCenter();
+        return this.mask.isWater(centro.x, centro.y);
+    }
+
     /** O personagem cabe nesta posição, considerando a elipse dele? */
     private canStand(actor: Actor, x: number, y: number): boolean {
         const centroY = y + actor.rank.size.height / 2 - actor.collisionRx + (actor.collisionRy * 4) / 3;
@@ -544,9 +556,11 @@ export class World {
             return;
         }
 
-        // Golpe em curso anda devagar; carregando, mais devagar ainda. O fator
-        // sai de `movementFactor`, o mesmo que o cliente usa na previsão.
-        const speed = actor.rank.speed * movementFactor(actor.attacking, actor.charging);
+        // Golpe em curso anda devagar; carregando, mais devagar ainda; dentro
+        // d'água, mais devagar ainda. O fator sai de `movementFactor`, o mesmo
+        // que o cliente usa na previsão.
+        const speed = actor.rank.speed
+            * movementFactor(actor.attacking, actor.charging, this.inWater(actor));
         actor.vx = actor.inputDx * speed;
         actor.vy = actor.inputDy * speed;
 
@@ -584,7 +598,7 @@ export class World {
         else if (actor.y > WORLD_HEIGHT - m && Math.sin(moveAngle) > 0) moveAngle = -Math.PI / 2;
 
         const speed = actor.rank.speed * BOT_SPEED_FACTOR *
-            movementFactor(actor.attacking, actor.charging);
+            movementFactor(actor.attacking, actor.charging, this.inWater(actor));
         actor.vx = Math.cos(moveAngle) * speed;
         actor.vy = Math.sin(moveAngle) * speed;
 
@@ -651,15 +665,13 @@ export class World {
         const de = actor.ellipseCenter();
         const para = target.ellipseCenter();
 
-        this.checkStuck(actor);
+        // Acabou de travar: escolhe agora por onde sair, com o mapa na mão.
+        if (this.checkStuck(actor)) actor.unstickAngle = this.escapeAngle(actor, de, para);
 
-        // Saindo de um canto: anda na tangente por um instante, ignorando o
-        // waypoint. Sem isto o caminho recalculado aponta para o mesmo lugar e
-        // ele volta a encostar na mesma quina.
-        if (this.now < actor.unstickUntil) {
-            const base = angleBetween(de.x, de.y, para.x, para.y);
-            return base + actor.unstickSide * BOT_UNSTICK_ANGLE;
-        }
+        // Saindo de um canto: anda na direção escolhida por um instante,
+        // ignorando o waypoint. Sem isto o caminho recalculado aponta para o
+        // mesmo lugar e ele volta a encostar na mesma quina.
+        if (this.now < actor.unstickUntil) return actor.unstickAngle;
 
         if (this.nav.hasLineOfSight(de.x, de.y, para.x, para.y, actor.collisionRx, actor.collisionRy)) {
             actor.clearPath();
@@ -741,15 +753,15 @@ export class World {
      * remédio é jogar a rota fora e liberar um recálculo imediato, que é o que
      * tira o bot da margem do rio e o manda para a ponte.
      */
-    private checkStuck(actor: Actor): void {
-        if (this.now - actor.progressAt < BOT_STUCK_CHECK_MS) return;
+    private checkStuck(actor: Actor): boolean {
+        if (this.now - actor.progressAt < BOT_STUCK_CHECK_MS) return false;
 
         const andou = distance(actor.x, actor.y, actor.progressX, actor.progressY);
         actor.progressX = actor.x;
         actor.progressY = actor.y;
         actor.progressAt = this.now;
 
-        if (andou >= BOT_STUCK_MIN_PROGRESS) return;
+        if (andou >= BOT_STUCK_MIN_PROGRESS) return false;
 
         actor.clearPath();
         actor.pathAt = 0; // libera o recálculo já no próximo passo
@@ -757,6 +769,44 @@ export class World {
         // Contorna pelo lado oposto ao da última tentativa.
         actor.unstickSide = -actor.unstickSide;
         actor.unstickUntil = this.now + BOT_UNSTICK_MS;
+        return true;
+    }
+
+    /**
+     * Por onde sair da quina.
+     *
+     * Testa desvios crescentes (`BOT_UNSTICK_ANGLES`) para os dois lados,
+     * começando pelo lado que ainda não foi tentado, e devolve o primeiro que
+     * tem `BOT_UNSTICK_PROBE` px livres — medido com a MESMA linha de visão da
+     * navegação e com o corpo do próprio bot, então um vão onde ele não cabe é
+     * recusado.
+     *
+     * Não é movimento aleatório nem teleporte: é uma direção real e livre, e o
+     * bot anda até lá pelo caminho normal. Só roda quando a travada é detectada
+     * (no máximo uma vez por `BOT_STUCK_CHECK_MS` por bot), então são poucas
+     * consultas à máscara e nenhuma busca no grid.
+     */
+    private escapeAngle(actor: Actor, de: { x: number; y: number }, para: { x: number; y: number }): number {
+        const base = angleBetween(de.x, de.y, para.x, para.y);
+        const lados = [actor.unstickSide, -actor.unstickSide];
+
+        for (const desvio of BOT_UNSTICK_ANGLES) {
+            for (const lado of lados) {
+                const angulo = base + lado * desvio;
+                const alvoX = de.x + Math.cos(angulo) * BOT_UNSTICK_PROBE;
+                const alvoY = de.y + Math.sin(angulo) * BOT_UNSTICK_PROBE;
+
+                if (this.nav.hasLineOfSight(
+                    de.x, de.y, alvoX, alvoY, actor.collisionRx, actor.collisionRy,
+                )) {
+                    return angulo;
+                }
+            }
+        }
+
+        // Cercado por todos os lados testados (raro): mantém o contorno antigo,
+        // que ao menos alterna de lado a cada travada.
+        return base + actor.unstickSide * BOT_UNSTICK_ANGLE;
     }
 
     /**

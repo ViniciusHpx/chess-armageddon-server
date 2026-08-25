@@ -14,6 +14,7 @@
     "loadtest": "tsx loadtest/example.ts --room arena --numClients 8",
     "build": "tsc -p tsconfig.build.json",
     "sync:mask": "node scripts/copy-collision.mjs",
+    "paint:water": "node scripts/paint-water.mjs",
     "clean": "rimraf build",
     "typecheck": "tsc --noEmit",
     "test": "mocha -r tsx test/**/*.test.ts --exit --timeout 15000"

@@ -202,6 +202,8 @@ export class Actor {
      */
     unstickUntil = 0;
     unstickSide = 1;
+    /** Direção escolhida para sair da quina (absoluta, em radianos). */
+    unstickAngle = 0;
 
     // --- IA (bots) ---
     wanderAngle = Math.random() * Math.PI * 2;

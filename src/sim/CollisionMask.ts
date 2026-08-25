@@ -10,8 +10,16 @@
  *
  *   1. **o asset é a METADE esquerda** (2496x1684). O mundo é essa metade mais
  *      o espelho dela, daí `WORLD_WIDTH = HALF_WORLD_WIDTH * 2`;
- *   2. **livre = canal vermelho > 128**. O limiar (em vez de "é preto?")
- *      perdoa o anti-aliasing da borda do desenho.
+ *   2. **as três classes de terreno**, pela cor do pixel:
+ *
+ *          branco (r > 128)              chão livre
+ *          azul   (b > 128, r <= 128)    água: navegável, mas mais lenta
+ *          preto                         parede
+ *
+ *      O limiar (em vez de "é preto?") perdoa o anti-aliasing do desenho. A
+ *      água entrou na própria máscara, e não num segundo arquivo, para
+ *      continuar existindo UMA fonte de verdade do terreno — quem pinta é
+ *      `scripts/paint-water.mjs`.
  *
  * Memória: 1 bit por pixel da metade = 2496 * 1684 / 8 ≈ 512 KB, carregado uma
  * vez e só consultado depois. Nada de decodificar imagem por tick.
@@ -44,11 +52,15 @@ export class CollisionMask {
     readonly height = WORLD_HEIGHT;
     readonly halfWidth = HALF_WORLD_WIDTH;
 
-    /** 1 bit por pixel da metade esquerda: 1 = livre. */
+    /** 1 bit por pixel da metade esquerda: 1 = dá para andar (chão OU água). */
     private readonly bits: Uint8Array;
 
-    private constructor(bits: Uint8Array) {
+    /** 1 bit por pixel: 1 = água. Subconjunto de `bits`. */
+    private readonly water: Uint8Array;
+
+    private constructor(bits: Uint8Array, water: Uint8Array) {
         this.bits = bits;
+        this.water = water;
     }
 
     /** Instância única do processo; ver `load()`. */
@@ -88,18 +100,49 @@ export class CollisionMask {
 
             const total = png.width * png.height;
             const bits = new Uint8Array(Math.ceil(total / 8));
+            const water = new Uint8Array(Math.ceil(total / 8));
+            let nAgua = 0;
+
             for (let i = 0; i < total; i++) {
-                // Canal vermelho, mesmo critério do cliente.
-                if (png.data[i * 4] > 128) bits[i >> 3] |= 1 << (i & 7);
+                // Mesmo critério do cliente: branco é chão, azul é água, e
+                // dá para andar nos dois.
+                const chao = png.data[i * 4] > 128;
+                const agua = !chao && png.data[i * 4 + 2] > 128;
+
+                if (chao || agua) bits[i >> 3] |= 1 << (i & 7);
+                if (agua) {
+                    water[i >> 3] |= 1 << (i & 7);
+                    nAgua++;
+                }
             }
 
-            console.log(`máscara de colisão carregada de ${arquivo}`);
-            return new CollisionMask(bits);
+            console.log(
+                `máscara de colisão carregada de ${arquivo}` +
+                (nAgua > 0 ? ` (${((100 * nAgua) / total).toFixed(1)}% de água)` : " (sem água)"),
+            );
+            return new CollisionMask(bits, water);
         }
 
         throw new Error(
             `máscara de colisão não encontrada. Procurei em: ${CANDIDATOS.filter(Boolean).join(", ")}`,
         );
+    }
+
+    /**
+     * O pixel é água?
+     *
+     * Uma consulta de bit, igual à de `isWalkable` — é o que permite perguntar
+     * "está na água?" todo tick sem custo. Fora do mapa não é água.
+     */
+    isWater(x: number, y: number): boolean {
+        let px = Math.floor(x);
+        const py = Math.floor(y);
+
+        if (px < 0 || py < 0 || px >= this.width || py >= this.height) return false;
+        if (px >= this.halfWidth) px = this.width - 1 - px;
+
+        const i = py * this.halfWidth + px;
+        return (this.water[i >> 3] & (1 << (i & 7))) !== 0;
     }
 
     /** O pixel é caminhável? Fora do mapa conta como bloqueado. */
