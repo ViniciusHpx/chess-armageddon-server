@@ -34,6 +34,7 @@ import {
     BOT_UNSTICK_ANGLE, BOT_UNSTICK_MS,
     BOT_DASH_COOLDOWN_MS, BOT_DODGE_CHANCE, BOT_DODGE_RANGE_SLACK, BOT_DODGE_REACTION_MS,
     DASH_COOLDOWN_MS, DASH_DISTANCE, DASH_INVULN_MS, DASH_SPEED, DASH_TIMEOUT_MS,
+    DASH_STOP_PUSHBACK, BASE_HEAL_PER_SECOND, insideSpawnZone,
     attackHalfBand, attackReach, knockbackSpeed, XP_PER_KILL,
     attackRecoveryMs, attackWindupMs, chargeAreaMult, chargeDamage, chargePower,
     CHARGED_ATTACK_ENABLED,
@@ -381,6 +382,17 @@ export class World {
         for (const actor of this.actors.values()) {
             if (!actor.alive) continue;
 
+            // Dash que esbarrou em alguém termina aqui, encostado nele, em vez
+            // de seguir empurrando pelo resto da distância — era esse empurra-
+            // -e-separa que jogava o personagem para trás quadro após quadro.
+            // Só o empurrão CONTRA o sentido do dash conta: dashar para longe
+            // de quem está colado também separa, e não pode cancelar nada.
+            if (actor.isDashing(this.now)) {
+                const contra = actor.separationX * actor.dashDirX
+                    + actor.separationY * actor.dashDirY;
+                if (contra < -DASH_STOP_PUSHBACK) actor.cancelDash();
+            }
+
             actor.clampToWorld();
 
             // A separação entre personagens e o clamp da borda podem empurrar
@@ -411,6 +423,30 @@ export class World {
             if (!actor.alive && actor.isBot && this.now >= actor.respawnAt) {
                 this.respawn(actor);
             }
+        }
+
+        this.healInBase(dt);
+    }
+
+    /**
+     * Cura de quem está dentro do castelo do PRÓPRIO time.
+     *
+     * Roda no tick, como o resto: não há temporizador por jogador nem estado de
+     * "está curando" — a cada tick se pergunta onde o ator está. Sair da base
+     * simplesmente para de curar no tick seguinte.
+     *
+     * A posição é a do servidor: o cliente não tem como alegar que está na
+     * base, e o castelo do outro time nunca cura (a zona é a do time do ator).
+     */
+    private healInBase(dt: number): void {
+        for (const actor of this.actors.values()) {
+            if (!actor.alive || actor.currentHealth >= actor.maxHealth) continue;
+            if (!insideSpawnZone(actor.team, actor.x, actor.y)) continue;
+
+            actor.currentHealth = Math.min(
+                actor.maxHealth,
+                actor.currentHealth + BASE_HEAL_PER_SECOND * dt,
+            );
         }
     }
 

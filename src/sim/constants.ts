@@ -216,6 +216,29 @@ export const SPAWN_ZONE = {
     maxY: 1400,
 } as const;
 
+/**
+ * O ponto está dentro do castelo deste time?
+ *
+ * Mesma conta de `World.placeAtSpawn`, ao contrário: a zona do `enemy` é o
+ * espelho em X, como o mapa inteiro. É o que define "estar na própria base" —
+ * não existe outro objeto de castelo no jogo, e usar a zona de nascimento
+ * mantém uma fonte de verdade só.
+ */
+export function insideSpawnZone(team: Team, x: number, y: number): boolean {
+    const bruteX = team === "enemy" ? WORLD_WIDTH - x : x;
+    return bruteX >= SPAWN_ZONE.minX && bruteX <= SPAWN_ZONE.maxX
+        && y >= SPAWN_ZONE.minY && y <= SPAWN_ZONE.maxY;
+}
+
+/**
+ * Vida recuperada por segundo dentro do PRÓPRIO castelo.
+ *
+ * 20/s enche um peão (100) em 5 s e uma torre (200) em 10 s: dá para voltar
+ * inteiro à briga sem que a base vire lugar de morar. Curar é contínuo (sai do
+ * `dt` do tick, não de um pulso na entrada) e nunca passa de `maxHealth`.
+ */
+export const BASE_HEAL_PER_SECOND = 20;
+
 /** Tentativas de sorteio antes de desistir e usar o fallback do castelo. */
 export const SPAWN_ATTEMPTS = 40;
 
@@ -476,6 +499,16 @@ export const DASH_COOLDOWN_MS = 1500;
  * fim do movimento ainda dói.
  */
 export const DASH_INVULN_MS = 160;
+
+/**
+ * Empurrão da separação, em px por tick, que interrompe um dash.
+ *
+ * O dash acaba quando ESBARRA em alguém: se a separação empurrou o personagem
+ * CONTRA o sentido do dash mais do que isto, ele para ali, junto do outro. Só
+ * o sentido contrário conta — dashar para longe de quem está encostado também
+ * gera empurrão, e cancelar aí tiraria justamente a fuga de um aglomerado.
+ */
+export const DASH_STOP_PUSHBACK = 1;
 
 /** Cooldown do dash para bots: bem maior, senão eles esquivam demais. */
 export const BOT_DASH_COOLDOWN_MS = 3000;

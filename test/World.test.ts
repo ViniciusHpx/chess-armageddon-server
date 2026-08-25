@@ -14,7 +14,7 @@ import {
     GAME_MODES, DEFAULT_GAME_MODE, sanitizeGameMode,
     DAMAGE_LIGHT, DAMAGE_MAX, AREA_MULT_LIGHT, AREA_MULT_MAX, KNOCKBACK_CHARGED_FACTOR,
     attackWindupMs, attackRecoveryMs, chargePower,
-    CHARGED_ATTACK_ENABLED,
+    CHARGED_ATTACK_ENABLED, BASE_HEAL_PER_SECOND, insideSpawnZone, DASH_DISTANCE,
 } from "../src/sim/constants.js";
 
 /**
@@ -50,6 +50,16 @@ function comSorteioCerto<T>(fn: () => T): T {
 const LIVRE_X = 400;
 const LIVRE_Y = 800;
 
+/**
+ * Chão livre FORA do castelo aliado.
+ *
+ * `LIVRE_X/Y` fica dentro da zona de nascimento, e lá a base cura 20/s
+ * (`BASE_HEAL_PER_SECOND`) — o que atrapalha os testes que medem dano com
+ * pausas longas entre os golpes.
+ */
+const FORA_X = 1600;
+const FORA_Y = 840;
+
 function afasta(bot: Actor, target: Actor, distancia: number): void {
     bot.teleport(LIVRE_X, LIVRE_Y);
     target.teleport(LIVRE_X + distancia, LIVRE_Y);
@@ -67,10 +77,12 @@ function advance(world: World, ms: number): void {
  * bastante para o CollisionResolver não os empurrar: as elipses só se separam
  * abaixo de collisionRx * 2 = 100 px.
  */
-function placeSideBySide(attacker: Actor, target: Actor): void {
-    attacker.teleport(LIVRE_X, LIVRE_Y);
+function placeSideBySide(
+    attacker: Actor, target: Actor, baseX = LIVRE_X, baseY = LIVRE_Y,
+): void {
+    attacker.teleport(baseX, baseY);
     attacker.flipX = false; // virado para a direita
-    target.teleport(LIVRE_X + 110, LIVRE_Y);
+    target.teleport(baseX + 110, baseY);
 }
 
 /** Um golpe simples: carrega e solta no mesmo instante. */
@@ -793,9 +805,10 @@ describe("World (simulação)", () => {
         actor.addExperience(XP_PER_LEVEL * 2 + 40);   // cavalo, 40 de progresso
         assert.strictEqual(actor.rankKey, "HORSE");
 
-        // Morre de verdade, pelo caminho normal do combate.
+        // Morre de verdade, pelo caminho normal do combate — fora do castelo,
+        // onde a base não estaria curando o alvo entre um golpe e outro.
         for (let i = 0; i < 8 && actor.alive; i++) {
-            placeSideBySide(algoz, actor);
+            placeSideBySide(algoz, actor, FORA_X, FORA_Y);
             algoz.attackReadyAt = 0;
             swing(world, algoz);
             advance(world, 300);
@@ -1366,6 +1379,98 @@ describe("World (simulação)", () => {
     // -----------------------------------------------------------------------
     // MODO DE JOGO
     // -----------------------------------------------------------------------
+
+    it("o dash para junto de quem estava no caminho, sem voltar", () => {
+        const world = new World();
+        const dasher = world.addPlayer("a", "ally", "A");
+        const alvo = world.addPlayer("b", "enemy", "B");
+
+        // Alvo a meio caminho do dash: o impulso vai encontrá-lo.
+        dasher.teleport(LIVRE_X, LIVRE_Y);
+        alvo.teleport(LIVRE_X + DASH_DISTANCE / 2, LIVRE_Y);
+        alvo.inputDx = 0;
+
+        assert.strictEqual(world.requestDash(dasher), true);
+        advance(world, 400);
+
+        const parou = dasher.x;
+        const encostado = alvo.x - (dasher.collisionRx + alvo.collisionRx);
+
+        assert.ok(dasher.x > LIVRE_X, "o dash tem de ter avançado");
+        assert.ok(
+            dasher.x >= encostado - 20,
+            `parou longe demais do alvo: ${dasher.x} contra ${encostado}`,
+        );
+        assert.ok(dasher.x < alvo.x, "não pode atravessar o outro personagem");
+
+        // E não é arrastado de volta depois que o dash acaba.
+        advance(world, 400);
+        assert.ok(
+            Math.abs(dasher.x - parou) < 5,
+            `voltou ${parou - dasher.x} px depois de parar`,
+        );
+    });
+
+    it("dashar para longe de quem está colado não cancela o dash", () => {
+        const world = new World();
+        const dasher = world.addPlayer("a", "ally", "A");
+        const colado = world.addPlayer("b", "ally", "B");
+
+        dasher.teleport(LIVRE_X, LIVRE_Y);
+        colado.teleport(LIVRE_X + 20, LIVRE_Y); // sobreposto de propósito
+        dasher.inputDx = -1;
+        dasher.inputDy = 0;
+
+        assert.strictEqual(world.requestDash(dasher), true);
+        advance(world, 400);
+
+        assert.ok(
+            LIVRE_X - dasher.x > DASH_DISTANCE * 0.7,
+            `o dash de fuga rendeu só ${LIVRE_X - dasher.x} px`,
+        );
+    });
+
+    it("o castelo cura só quem é do time dele", () => {
+        const world = new World();
+        const aliado = world.addPlayer("a", "ally", "A");
+        const inimigo = world.addPlayer("b", "enemy", "B");
+
+        // Os dois no castelo aliado, machucados.
+        aliado.teleport(LIVRE_X, LIVRE_Y);
+        inimigo.teleport(LIVRE_X + 200, LIVRE_Y);
+        aliado.currentHealth = 10;
+        inimigo.currentHealth = 10;
+
+        assert.ok(insideSpawnZone("ally", aliado.x, aliado.y), "cenário: dentro da base aliada");
+        assert.ok(!insideSpawnZone("enemy", inimigo.x, inimigo.y), "cenário: base errada para o inimigo");
+
+        advance(world, 1000);
+
+        assert.ok(
+            Math.abs(aliado.currentHealth - (10 + BASE_HEAL_PER_SECOND)) < 1,
+            `curou ${aliado.currentHealth - 10} em 1 s`,
+        );
+        assert.strictEqual(inimigo.currentHealth, 10, "base do outro time não cura");
+    });
+
+    it("a cura para no máximo, e fora da base não acontece", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+
+        actor.teleport(LIVRE_X, LIVRE_Y);
+        actor.currentHealth = actor.maxHealth - 5;
+        advance(world, 2000);
+
+        assert.strictEqual(actor.currentHealth, actor.maxHealth, "não pode passar do máximo");
+
+        // Fora da zona: para de curar.
+        actor.teleport(FORA_X, FORA_Y);
+        assert.ok(!insideSpawnZone("ally", actor.x, actor.y), "cenário: fora da base");
+        actor.currentHealth = 40;
+        advance(world, 1000);
+
+        assert.strictEqual(actor.currentHealth, 40, "fora da base ninguém cura");
+    });
 
     it("o time vence ao bater o limite de abates, e a partida congela", () => {
         const world = new World();

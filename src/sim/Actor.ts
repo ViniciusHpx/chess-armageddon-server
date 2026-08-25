@@ -111,6 +111,15 @@ export class Actor {
     dashRemaining = 0;
     /** Instante a partir do qual pode dar outro dash. */
     dashReadyAt = 0;
+    /**
+     * Quanto a separação corpo-a-corpo moveu este ator no tick corrente.
+     *
+     * Escrito pelo `CollisionResolver` e lido pelo `World` para saber se um
+     * dash esbarrou em alguém (empurrão contra o sentido do dash). Zerado a
+     * cada tick pelo próprio resolver.
+     */
+    separationX = 0;
+    separationY = 0;
     /** Direção do dash, unitária. Congelada no início: virar no meio do dash
      *  quebraria a previsão do cliente, que só sabe a direção do começo. */
     dashDirX = 0;

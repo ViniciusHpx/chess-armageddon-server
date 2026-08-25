@@ -46,6 +46,9 @@ export function resolveCollisions(actors: Iterable<Actor>): void {
 
     for (const actor of actors) {
         if (!actor.alive) continue;
+        // Começa o tick sem empurrão: quem não for separado abaixo fica zerado.
+        actor.separationX = 0;
+        actor.separationY = 0;
         const center = actor.ellipseCenter();
         entries.push({
             actor,
@@ -80,6 +83,10 @@ export function resolveCollisions(actors: Iterable<Actor>): void {
         if (dx === 0 && dy === 0) continue;
         entry.actor.x += dx;
         entry.actor.y += dy;
+        // Guardado para o `World`: é por este vetor que ele sabe que um dash
+        // esbarrou em alguém, e de que lado veio o empurrão.
+        entry.actor.separationX = dx;
+        entry.actor.separationY = dy;
     }
 }
 
