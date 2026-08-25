@@ -15,6 +15,7 @@ import {
     DAMAGE_LIGHT, DAMAGE_MAX, AREA_MULT_LIGHT, AREA_MULT_MAX, KNOCKBACK_CHARGED_FACTOR,
     attackWindupMs, attackRecoveryMs, chargePower,
     CHARGED_ATTACK_ENABLED, BASE_HEAL_PER_SECOND, insideSpawnZone, DASH_DISTANCE,
+    canPhaseDash,
 } from "../src/sim/constants.js";
 
 /**
@@ -1470,6 +1471,132 @@ describe("World (simulação)", () => {
         advance(world, 1000);
 
         assert.strictEqual(actor.currentHealth, 40, "fora da base ninguém cura");
+    });
+
+    /**
+     * Procura no mapa de verdade um ponto de partida em que o dash para leste
+     * atravesse parede. `chegadaLivre` escolhe entre os dois casos que
+     * interessam: parede fina com chão do outro lado, e parede que segue até
+     * depois do alcance do dash.
+     *
+     * Varre a máscara em vez de cravar coordenadas: se a arte mudar, o teste
+     * continua achando um cenário válido (ou falha dizendo que não achou).
+     */
+    function acheParede(
+        world: World, actor: Actor, chegadaLivre: boolean,
+    ): { x: number; y: number } | undefined {
+        const cabe = (x: number, y: number) => {
+            const centroY = y + actor.rank.size.height / 2
+                - actor.collisionRx + (actor.collisionRy * 4) / 3;
+            return world.mask.canStand(x, centroY, actor.collisionRx, actor.collisionRy);
+        };
+
+        for (let y = 300; y < WORLD_HEIGHT - 300; y += 40) {
+            for (let x = 300; x < HALF_WORLD_WIDTH - DASH_DISTANCE; x += 20) {
+                if (!cabe(x, y)) continue;
+                // Alguma coisa sólida no meio do caminho.
+                if (cabe(x + DASH_DISTANCE / 2, y)) continue;
+                if (cabe(x + DASH_DISTANCE, y) !== chegadaLivre) continue;
+                return { x, y };
+            }
+        }
+        return undefined;
+    }
+
+    /** Dá um dash para leste e devolve onde o personagem parou. */
+    function dashParaLeste(world: World, actor: Actor): number {
+        actor.inputDx = 1;
+        actor.inputDy = 0;
+        actor.dashReadyAt = 0;
+        assert.strictEqual(world.requestDash(actor), true, "o dash deveria ter saído");
+
+        // A direção já foi congelada no dash; sem zerar a entrada o personagem
+        // sairia ANDANDO para leste depois que o impulso acabasse, e a medida
+        // deixaria de ser a do dash.
+        actor.inputDx = 0;
+        advance(world, 600);
+        return actor.x;
+    }
+
+    it("o cavalo atravessa a estrutura quando cabe do outro lado", () => {
+        const world = new World();
+        const cavalo = world.addPlayer("a", "ally", "A");
+        cavalo.setRank("HORSE");
+
+        const ponto = acheParede(world, cavalo, true);
+        assert.ok(ponto, "não achei parede fina com chão do outro lado no mapa");
+
+        cavalo.teleport(ponto!.x, ponto!.y);
+        const parou = dashParaLeste(world, cavalo);
+
+        assert.ok(
+            Math.abs(parou - (ponto!.x + DASH_DISTANCE)) < 15,
+            `devia pousar em ${ponto!.x + DASH_DISTANCE}, parou em ${parou}`,
+        );
+
+        const centro = cavalo.ellipseCenter();
+        assert.ok(
+            world.mask.canStand(centro.x, centro.y, cavalo.collisionRx, cavalo.collisionRy),
+            "não pode terminar dentro (nem meio dentro) da estrutura",
+        );
+        assert.strictEqual(cavalo.dashPhasing, false, "a travessia tem de acabar com o dash");
+    });
+
+    it("as outras peças continuam paradas pela mesma estrutura", () => {
+        const world = new World();
+        const cavalo = world.addPlayer("a", "ally", "A");
+        cavalo.setRank("HORSE");
+        const ponto = acheParede(world, cavalo, true);
+        assert.ok(ponto);
+
+        const peao = world.addPlayer("b", "enemy", "B");
+        assert.strictEqual(canPhaseDash(peao.rankKey), false);
+
+        peao.teleport(ponto!.x, ponto!.y);
+        const parou = dashParaLeste(world, peao);
+
+        assert.ok(
+            parou < ponto!.x + DASH_DISTANCE / 2,
+            `o peão atravessou a parede: ${ponto!.x} -> ${parou}`,
+        );
+        assert.strictEqual(peao.dashPhasing, false);
+    });
+
+    it("o cavalo não atravessa quando não há chegada válida", () => {
+        const world = new World();
+        const cavalo = world.addPlayer("a", "ally", "A");
+        cavalo.setRank("HORSE");
+
+        const ponto = acheParede(world, cavalo, false);
+        assert.ok(ponto, "não achei parede grossa o bastante no mapa");
+
+        cavalo.teleport(ponto!.x, ponto!.y);
+        const parou = dashParaLeste(world, cavalo);
+
+        assert.ok(
+            parou < ponto!.x + DASH_DISTANCE / 2,
+            `entrou na estrutura sem ter onde cair: ${ponto!.x} -> ${parou}`,
+        );
+
+        const centro = cavalo.ellipseCenter();
+        assert.ok(
+            world.mask.canStand(centro.x, centro.y, cavalo.collisionRx, cavalo.collisionRy),
+            "terminou dentro da estrutura",
+        );
+    });
+
+    it("nem o cavalo sai pela borda do mapa", () => {
+        const world = new World();
+        const cavalo = world.addPlayer("a", "ally", "A");
+        cavalo.setRank("HORSE");
+
+        const halfW = cavalo.rank.size.width / 2;
+        cavalo.teleport(WORLD_WIDTH - halfW - 10, LIVRE_Y);
+
+        const parou = dashParaLeste(world, cavalo);
+
+        assert.strictEqual(cavalo.dashPhasing, false, "borda não se atravessa");
+        assert.ok(parou <= WORLD_WIDTH - halfW, `saiu do mapa: x=${parou}`);
     });
 
     it("o time vence ao bater o limite de abates, e a partida congela", () => {

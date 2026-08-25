@@ -510,6 +510,20 @@ export const DASH_INVULN_MS = 160;
  */
 export const DASH_STOP_PUSHBACK = 1;
 
+/**
+ * Rank que atravessa estrutura durante o dash — o salto do cavalo do xadrez.
+ *
+ * É uma regra da PEÇA, não de quem a controla: humano e bot passam pelo mesmo
+ * `World.startDash`, então os dois ganham a travessia ao virar cavalo e a
+ * perdem ao promover.
+ */
+export const DASH_PHASE_RANK: RankKey = "HORSE";
+
+/** O rank atravessa parede durante o dash? */
+export function canPhaseDash(rankKey: RankKey): boolean {
+    return rankKey === DASH_PHASE_RANK;
+}
+
 /** Cooldown do dash para bots: bem maior, senão eles esquivam demais. */
 export const BOT_DASH_COOLDOWN_MS = 3000;
 

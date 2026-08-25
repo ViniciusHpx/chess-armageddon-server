@@ -34,7 +34,7 @@ import {
     BOT_UNSTICK_ANGLE, BOT_UNSTICK_MS,
     BOT_DASH_COOLDOWN_MS, BOT_DODGE_CHANCE, BOT_DODGE_RANGE_SLACK, BOT_DODGE_REACTION_MS,
     DASH_COOLDOWN_MS, DASH_DISTANCE, DASH_INVULN_MS, DASH_SPEED, DASH_TIMEOUT_MS,
-    DASH_STOP_PUSHBACK, BASE_HEAL_PER_SECOND, insideSpawnZone,
+    DASH_STOP_PUSHBACK, BASE_HEAL_PER_SECOND, insideSpawnZone, canPhaseDash,
     attackHalfBand, attackReach, knockbackSpeed, XP_PER_KILL,
     attackRecoveryMs, attackWindupMs, chargeAreaMult, chargeDamage, chargePower,
     CHARGED_ATTACK_ENABLED,
@@ -155,6 +155,16 @@ export class World {
      * então uma quina nunca vira passagem.
      */
     private moveWithCollision(actor: Actor, destinoX: number, destinoY: number): void {
+        // Cavalo em travessia: passa reto pela estrutura. Não é "colisão
+        // desligada" — vale só para o cenário, só durante o dash e só depois de
+        // a chegada ter sido aprovada; a separação entre personagens e o clamp
+        // da borda continuam rodando normalmente.
+        if (actor.dashPhasing) {
+            actor.x = destinoX;
+            actor.y = destinoY;
+            return;
+        }
+
         const offsetY = actor.rank.size.height / 2 - actor.collisionRx + (actor.collisionRy * 4) / 3;
         const destino = this.mask.resolveMove(
             actor.x, actor.y, destinoX, destinoY,
@@ -317,6 +327,11 @@ export class World {
     private startDash(actor: Actor, dirX: number, dirY: number): void {
         actor.dashDirX = dirX;
         actor.dashDirY = dirY;
+        // Cavalo salta por cima da estrutura, desde que caiba do outro lado. A
+        // decisão é tomada UMA vez, aqui, e vale para humano e bot — os dois
+        // chegam neste mesmo ponto (`requestDash` e `tryBotDodge`).
+        actor.dashPhasing = canPhaseDash(actor.rankKey)
+            && this.dashLandsFree(actor, dirX, dirY);
         actor.dashUntil = this.now + DASH_TIMEOUT_MS;
         actor.dashRemaining = DASH_DISTANCE;
         // O cooldown conta do INÍCIO do dash, não do fim: assim mexer na
@@ -336,6 +351,31 @@ export class World {
         }
 
         if (dirX !== 0) actor.flipX = dirX < 0;
+    }
+
+    /**
+     * O dash inteiro cabe do outro lado da estrutura?
+     *
+     * Testa só o PONTO DE CHEGADA (origem + direção × `DASH_DISTANCE`), com a
+     * mesma `canStand` de qualquer movimento: as nove sondas da elipse, ou
+     * seja, nada de terminar meio dentro da parede. Não varre o caminho — o
+     * que estiver no meio é justamente o que o cavalo atravessa, e uma sonda
+     * por dash custa menos que percorrer a trajetória.
+     *
+     * A borda do mapa continua absoluta: se o clamp mexeria na chegada, ela
+     * está fora e a travessia é recusada — o dash então segue a regra normal e
+     * para na parede.
+     */
+    private dashLandsFree(actor: Actor, dirX: number, dirY: number): boolean {
+        const x = actor.x + dirX * DASH_DISTANCE;
+        const y = actor.y + dirY * DASH_DISTANCE;
+
+        const halfW = actor.rank.size.width / 2;
+        const halfH = actor.rank.size.height / 2;
+        if (x < halfW || x > WORLD_WIDTH - halfW) return false;
+        if (y < halfH || y > WORLD_HEIGHT - halfH) return false;
+
+        return this.canStand(actor, x, y);
     }
 
     /** Renascer é pedido pelo cliente (botão RENASCER), com carência mínima. */
@@ -387,13 +427,22 @@ export class World {
             // -e-separa que jogava o personagem para trás quadro após quadro.
             // Só o empurrão CONTRA o sentido do dash conta: dashar para longe
             // de quem está colado também separa, e não pode cancelar nada.
-            if (actor.isDashing(this.now)) {
+            if (actor.isDashing(this.now) && !actor.dashPhasing) {
                 const contra = actor.separationX * actor.dashDirX
                     + actor.separationY * actor.dashDirY;
                 if (contra < -DASH_STOP_PUSHBACK) actor.cancelDash();
             }
 
             actor.clampToWorld();
+
+            // Em travessia o ator está DENTRO da estrutura de propósito, então
+            // a rede de segurança abaixo o devolveria para trás a cada tick.
+            // Ela volta a valer no tick em que o dash termina — e aprova a
+            // chegada, que foi validada antes de o dash sair.
+            if (actor.dashPhasing) {
+                if (actor.isDashing(this.now)) continue;
+                actor.dashPhasing = false;
+            }
 
             // A separação entre personagens e o clamp da borda podem empurrar
             // alguém para dentro da parede. Aqui a última posição válida é a

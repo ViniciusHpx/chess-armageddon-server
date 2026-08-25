@@ -120,6 +120,14 @@ export class Actor {
      */
     separationX = 0;
     separationY = 0;
+    /**
+     * Dash de travessia em curso (só o cavalo — ver `canPhaseDash`).
+     *
+     * Enquanto está de pé, a máscara do cenário NÃO vale para este ator: ele
+     * está dentro da estrutura por projeto. O ponto de chegada já foi validado
+     * antes de o dash começar, e a borda do mapa continua valendo.
+     */
+    dashPhasing = false;
     /** Direção do dash, unitária. Congelada no início: virar no meio do dash
      *  quebraria a previsão do cliente, que só sabe a direção do começo. */
     dashDirX = 0;
@@ -347,6 +355,7 @@ export class Actor {
 
     /** Corta um dash em curso (morte, respawn). Não mexe no cooldown. */
     cancelDash(): void {
+        this.dashPhasing = false;
         this.dashUntil = 0;
         this.dashRemaining = 0;
         this.dashDirX = 0;
