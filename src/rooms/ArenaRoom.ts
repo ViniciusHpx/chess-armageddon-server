@@ -4,7 +4,7 @@ import { Actor } from "../sim/Actor.js";
 import { World } from "../sim/World.js";
 import {
     RANKS, TEAM_INDEX, TEAM_SIZE, TICK_MS, RECONNECTION_SECONDS, DASH_COOLDOWN_MS, Team,
-    GAME_MODES, GameMode, sanitizeGameMode, TEAM_KILL_LIMIT,
+    GAME_MODES, GameMode, sanitizeGameMode, TEAM_KILL_LIMIT, ROOM_JOIN_GRACE_SECONDS,
 } from "../sim/constants.js";
 
 /**
@@ -133,6 +133,17 @@ export class ArenaRoom extends Room {
             this.spawnBot("enemy");
         }
 
+        // Sala nasce vazia, e o auto-descarte padrão a mataria em 15 s
+        // (`seatReservationTimeout`) — pouco para a revanche, cujo cliente
+        // ainda recarrega a página inteira antes de entrar. Desligar o
+        // auto-descarte segura a sala; o relógio abaixo o devolve, e aí ela só
+        // morre se continuar vazia.
+        this.autoDispose = false;
+        this.clock.setTimeout(
+            () => { this.autoDispose = true; },
+            ROOM_JOIN_GRACE_SECONDS * 1000,
+        );
+
         this.setPatchRate(TICK_MS);
         this.setSimulationInterval((deltaMs) => this.step(deltaMs), TICK_MS);
         this.publish();
@@ -159,6 +170,10 @@ export class ArenaRoom extends Room {
         }
 
         const name = sanitizeName(options.name) || `Jogador ${client.sessionId.slice(0, 4)}`;
+        // Entrou gente: o auto-descarte volta a valer normalmente (a sala morre
+        // quando o último sair). Ver a janela de carência no `onCreate`.
+        this.autoDispose = true;
+
         const actor = this.world.addPlayer(client.sessionId, team, name);
         this.state.actors.set(actor.id, new ActorState());
         this.writeActor(actor);

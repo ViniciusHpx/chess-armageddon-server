@@ -222,6 +222,21 @@ export const SPAWN_ATTEMPTS = 40;
 /** Distância mínima entre dois personagens recém-nascidos, em px. */
 export const SPAWN_MIN_DISTANCE = 120;
 
+/**
+ * Janela que uma sala recém-criada tem para receber o primeiro jogador.
+ *
+ * O padrão do Colyseus são 15 s (`seatReservationTimeout`): sala criada e
+ * vazia se descarta sozinha depois disso. É pouco para a revanche, que nasce
+ * pelo `matchMaker.createRoom` e só recebe gente depois de o cliente recarregar
+ * a página inteira (Phaser + arte). Passado o prazo, o `joinById` caía numa
+ * sala inexistente — e a borda devolve uma página de erro sem
+ * `Access-Control-Allow-Origin`, que o navegador acusa como CORS.
+ *
+ * Vale para qualquer sala: quem cria pelo lobby entra em segundos, então o
+ * prazo maior não muda nada no caminho comum.
+ */
+export const ROOM_JOIN_GRACE_SECONDS = 90;
+
 /** Intervalo da simulação, em ms. 20 ticks/s. */
 export const TICK_MS = 50;
 
