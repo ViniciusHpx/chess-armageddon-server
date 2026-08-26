@@ -34,7 +34,7 @@ import {
     BOT_UNSTICK_ANGLE, BOT_UNSTICK_ANGLES, BOT_UNSTICK_PROBE, BOT_UNSTICK_MS,
     BOT_DASH_COOLDOWN_MS, BOT_DODGE_CHANCE, BOT_DODGE_RANGE_SLACK, BOT_DODGE_REACTION_MS,
     DASH_COOLDOWN_MS, DASH_DISTANCE, DASH_INVULN_MS, DASH_SPEED, DASH_TIMEOUT_MS,
-    DASH_STOP_PUSHBACK, BASE_HEAL_PER_SECOND, insideSpawnZone, canPhaseDash,
+    DASH_STOP_PUSHBACK, BASE_HEAL_PER_SECOND, insideHealZone, canPhaseDash,
     attackHalfBand, attackReach, knockbackSpeed, XP_PER_KILL,
     attackRecoveryMs, attackWindupMs, chargeAreaMult, chargeDamage, chargePower,
     CHARGED_ATTACK_ENABLED,
@@ -533,11 +533,14 @@ export class World {
      *
      * A posição é a do servidor: o cliente não tem como alegar que está na
      * base, e o castelo do outro time nunca cura (a zona é a do time do ator).
+     *
+     * A zona é a `HEAL_ZONE`, o miolo do pátio — NÃO a `SPAWN_ZONE`, que é
+     * larga demais e transbordava o portão.
      */
     private healInBase(dt: number): void {
         for (const actor of this.actors.values()) {
             if (!actor.alive || actor.currentHealth >= actor.maxHealth) continue;
-            if (!insideSpawnZone(actor.team, actor.x, actor.y)) continue;
+            if (!insideHealZone(actor.team, actor.x, actor.y)) continue;
 
             actor.currentHealth = Math.min(
                 actor.maxHealth,

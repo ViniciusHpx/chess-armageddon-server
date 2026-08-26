@@ -217,27 +217,59 @@ export const SPAWN_ZONE = {
 } as const;
 
 /**
- * O ponto está dentro do castelo deste time?
+ * Área que RECUPERA VIDA, no fundo do pátio de cada castelo.
  *
- * Mesma conta de `World.placeAtSpawn`, ao contrário: a zona do `enemy` é o
- * espelho em X, como o mapa inteiro. É o que define "estar na própria base" —
- * não existe outro objeto de castelo no jogo, e usar a zona de nascimento
- * mantém uma fonte de verdade só.
+ * NÃO é a `SPAWN_ZONE`: aquela é generosa de propósito (sorteio de nascimento,
+ * validado pela máscara) e transborda o portão — chega a y 1400, já no campo
+ * aberto ao sul do castelo. Curar ali significava curar na porta, e até fora
+ * dela.
+ *
+ * Este retângulo é o miolo do pátio, recuado do portão. Medido na máscara de
+ * colisão com uma busca em largura a partir do campo aberto, o ponto MENOS
+ * profundo daqui está a 1672 px de caminhada do lado de fora (a `SPAWN_ZONE`
+ * tem pontos a 808 px), e o corredor do portão — x 192..456, y 1176..1300 —
+ * fica inteiro fora. Ou seja: é preciso atravessar a entrada e avançar pátio
+ * adentro para a regeneração ligar.
+ *
+ * O recorte também é quase todo chão livre (99,9 % dos pixels), o que importa
+ * porque o cliente desenha ESTE MESMO retângulo como a névoa verde: verde em
+ * cima de muralha seria mentira visual.
+ *
+ * Como todo o resto do mapa, o time `enemy` usa o espelho em X.
  */
-export function insideSpawnZone(team: Team, x: number, y: number): boolean {
+export const HEAL_ZONE = {
+    minX: 220,
+    maxX: 840,
+    minY: 540,
+    maxY: 980,
+} as const;
+
+/**
+ * O ponto está na área de cura do castelo deste time?
+ *
+ * Espelho em X para o `enemy`, como o mapa inteiro. É o que define "estar na
+ * própria base" para efeito de regeneração — o castelo do outro time nunca
+ * cura, porque a zona testada é sempre a do time do ator.
+ */
+export function insideHealZone(team: Team, x: number, y: number): boolean {
     const bruteX = team === "enemy" ? WORLD_WIDTH - x : x;
-    return bruteX >= SPAWN_ZONE.minX && bruteX <= SPAWN_ZONE.maxX
-        && y >= SPAWN_ZONE.minY && y <= SPAWN_ZONE.maxY;
+    return bruteX >= HEAL_ZONE.minX && bruteX <= HEAL_ZONE.maxX
+        && y >= HEAL_ZONE.minY && y <= HEAL_ZONE.maxY;
 }
 
 /**
  * Vida recuperada por segundo dentro do PRÓPRIO castelo.
  *
- * 20/s enche um peão (100) em 5 s e uma torre (200) em 10 s: dá para voltar
- * inteiro à briga sem que a base vire lugar de morar. Curar é contínuo (sai do
- * `dt` do tick, não de um pulso na entrada) e nunca passa de `maxHealth`.
+ * 12/s enche um peão (100) em 8,3 s e uma torre (200) em 16,7 s. Era 20/s, o
+ * que devolvia um peão inteiro em 5 s — rápido demais para a volta ao combate
+ * custar alguma coisa. A recuperação continua contínua (sai do `dt` do tick,
+ * não de um pulso na entrada) e nunca passa de `maxHealth`.
+ *
+ * Esta constante é a ÚNICA fonte da taxa: o modo offline a espelha em
+ * `src/constants/Scenario.js` do cliente e não existe nenhum outro lugar
+ * somando vida por estar na base.
  */
-export const BASE_HEAL_PER_SECOND = 20;
+export const BASE_HEAL_PER_SECOND = 12;
 
 /** Tentativas de sorteio antes de desistir e usar o fallback do castelo. */
 export const SPAWN_ATTEMPTS = 40;

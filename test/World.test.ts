@@ -15,7 +15,7 @@ import {
     GAME_MODES, DEFAULT_GAME_MODE, sanitizeGameMode,
     DAMAGE_LIGHT, DAMAGE_MAX, AREA_MULT_LIGHT, AREA_MULT_MAX, KNOCKBACK_CHARGED_FACTOR,
     attackWindupMs, attackRecoveryMs, chargePower,
-    CHARGED_ATTACK_ENABLED, BASE_HEAL_PER_SECOND, insideSpawnZone, DASH_DISTANCE,
+    CHARGED_ATTACK_ENABLED, BASE_HEAL_PER_SECOND, insideHealZone, HEAL_ZONE, DASH_DISTANCE,
     canPhaseDash, WATER_SPEED_FACTOR,
 } from "../src/sim/constants.js";
 
@@ -55,9 +55,9 @@ const LIVRE_Y = 800;
 /**
  * Chão livre FORA do castelo aliado.
  *
- * `LIVRE_X/Y` fica dentro da zona de nascimento, e lá a base cura 20/s
- * (`BASE_HEAL_PER_SECOND`) — o que atrapalha os testes que medem dano com
- * pausas longas entre os golpes.
+ * `LIVRE_X/Y` fica dentro da área de cura do castelo aliado (`HEAL_ZONE`), e
+ * lá a base regenera `BASE_HEAL_PER_SECOND` — o que atrapalha os testes que
+ * medem dano com pausas longas entre os golpes.
  */
 const FORA_X = 1600;
 const FORA_Y = 840;
@@ -1448,8 +1448,8 @@ describe("World (simulação)", () => {
         aliado.currentHealth = 10;
         inimigo.currentHealth = 10;
 
-        assert.ok(insideSpawnZone("ally", aliado.x, aliado.y), "cenário: dentro da base aliada");
-        assert.ok(!insideSpawnZone("enemy", inimigo.x, inimigo.y), "cenário: base errada para o inimigo");
+        assert.ok(insideHealZone("ally", aliado.x, aliado.y), "cenário: dentro da base aliada");
+        assert.ok(!insideHealZone("enemy", inimigo.x, inimigo.y), "cenário: base errada para o inimigo");
 
         advance(world, 1000);
 
@@ -1458,6 +1458,81 @@ describe("World (simulação)", () => {
             `curou ${aliado.currentHealth - 10} em 1 s`,
         );
         assert.strictEqual(inimigo.currentHealth, 10, "base do outro time não cura");
+    });
+
+    /**
+     * A área de cura tem de ficar FUNDO no pátio: quem está no portão, ou
+     * ainda no campo aberto ao sul do castelo, não pode estar regenerando.
+     *
+     * O teste não crava "o portão é aqui": ele MEDE, com uma busca em largura
+     * sobre a própria máscara, a que distância de caminhada do lado de fora
+     * está cada ponto da zona. É assim que ele continua valendo se a arte do
+     * castelo mudar — e é assim que ele pegaria de volta a `SPAWN_ZONE`, cujo
+     * canto sul chega a 808 px (e transborda o portão).
+     */
+    it("a área de cura fica no fundo do pátio, longe do portão", () => {
+        const world = new World();
+        const S = 8;
+        const gw = Math.ceil(WORLD_WIDTH / S);
+        const gh = Math.ceil(WORLD_HEIGHT / S);
+        const dist = new Int32Array(gw * gh).fill(-1);
+
+        // Origem: campo aberto a leste do castelo aliado.
+        const inicio = (Math.floor(1400 / S)) * gw + Math.floor(1700 / S);
+        dist[inicio] = 0;
+        let fila = [inicio];
+        while (fila.length) {
+            const prox: number[] = [];
+            for (const c of fila) {
+                const cx = c % gw;
+                const cy = (c - cx) / gw;
+                for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+                    const nx = cx + dx;
+                    const ny = cy + dy;
+                    if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+                    const n = ny * gw + nx;
+                    if (dist[n] >= 0) continue;
+                    if (!world.mask.isWalkable(nx * S + S / 2, ny * S + S / 2)) continue;
+                    dist[n] = dist[c] + S;
+                    prox.push(n);
+                }
+            }
+            fila = prox;
+        }
+
+        let maisRaso = Infinity;
+        let cegos = 0;
+        for (let y = HEAL_ZONE.minY; y <= HEAL_ZONE.maxY; y += S) {
+            for (let x = HEAL_ZONE.minX; x <= HEAL_ZONE.maxX; x += S) {
+                const g = Math.floor(y / S) * gw + Math.floor(x / S);
+                if (!world.mask.isWalkable(x, y)) continue;
+                if (dist[g] < 0) { cegos++; continue; }
+                maisRaso = Math.min(maisRaso, dist[g]);
+            }
+        }
+
+        assert.strictEqual(cegos, 0, "a zona toda tem de ser alcançável de fora");
+        assert.ok(
+            maisRaso >= 1200,
+            `o ponto mais raso da zona está a só ${maisRaso} px do campo aberto`,
+        );
+
+        // O corredor do portão (medido na máscara: x 192..456, y 1176..1300)
+        // não pode curar ninguém.
+        for (const [x, y] of [[330, 1200], [330, 1280], [520, 1350], [900, 1380]]) {
+            assert.ok(
+                !insideHealZone("ally", x, y),
+                `(${x}, ${y}) é portão/campo aberto e não pode curar`,
+            );
+            assert.ok(
+                !insideHealZone("enemy", WORLD_WIDTH - x, y),
+                `o espelho de (${x}, ${y}) também não pode curar`,
+            );
+        }
+
+        // E o miolo do pátio continua curando, nos dois castelos.
+        assert.ok(insideHealZone("ally", 530, 760), "miolo do pátio aliado");
+        assert.ok(insideHealZone("enemy", WORLD_WIDTH - 530, 760), "miolo do pátio inimigo");
     });
 
     it("a cura para no máximo, e fora da base não acontece", () => {
@@ -1472,7 +1547,7 @@ describe("World (simulação)", () => {
 
         // Fora da zona: para de curar.
         actor.teleport(FORA_X, FORA_Y);
-        assert.ok(!insideSpawnZone("ally", actor.x, actor.y), "cenário: fora da base");
+        assert.ok(!insideHealZone("ally", actor.x, actor.y), "cenário: fora da base");
         actor.currentHealth = 40;
         advance(world, 1000);
 
