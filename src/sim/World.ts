@@ -419,6 +419,54 @@ export class World {
         this.respawn(actor);
     }
 
+    /**
+     * FERRAMENTA DE DEBUG: troca a peça do ator, ciclando peão → ... → rainha
+     * → peão. Pedida pelo cliente com a mensagem `"dbg"`.
+     *
+     * A promoção em si é do `Actor` (o mesmo `applyLevel` da promoção por XP);
+     * aqui ficam só as duas coisas que são do mundo, não do ator:
+     *
+     * 1. **golpe e dash em curso são cancelados.** As duas máquinas guardam
+     *    números derivados do rank (alcance, forma, distância que falta), e
+     *    trocar a peça no meio deixaria um golpe de rainha saindo de um peão.
+     *    É o mesmo cancelamento que o respawn já faz.
+     * 2. **a posição é revalidada.** A rainha é maior que o peão (rx 62,5
+     *    contra 50), então um peão encaixado num vão pode virar rainha dentro
+     *    da parede. `nearestFree` é o resgate que já existe para estado
+     *    quebrado — aqui ele é usado ANTES de o estado quebrar. Sem saída, a
+     *    troca é recusada e a peça fica como está: melhor não promover que
+     *    entalar.
+     */
+    debugCycleRank(actor: Actor): boolean {
+        if (!actor.alive || actor.frozen) return false;
+
+        const rankAnterior = actor.rankKey;
+        const xpAnterior = actor.xp;
+
+        actor.cancelAttack();
+        actor.cancelDash();
+        actor.debugCycleRank();
+
+        if (this.canStand(actor, actor.x, actor.y)) {
+            actor.teleport(actor.x, actor.y);
+            return true;
+        }
+
+        const offsetY = actor.rank.size.height / 2 - actor.collisionRx + (actor.collisionRy * 4) / 3;
+        const saida = this.mask.nearestFree(actor.x, actor.y, offsetY, actor.collisionRx, actor.collisionRy);
+        if (saida) {
+            actor.teleport(saida.x, saida.y);
+            return true;
+        }
+
+        // Não coube em lugar nenhum: desfaz, sem deixar a peça dentro da pedra.
+        actor.setRank(rankAnterior);
+        actor.xp = xpAnterior;
+        actor.maxHealth = actor.rank.health;
+        actor.currentHealth = Math.min(actor.currentHealth, actor.maxHealth);
+        return false;
+    }
+
     // -----------------------------------------------------------------------
     // TICK
     // -----------------------------------------------------------------------

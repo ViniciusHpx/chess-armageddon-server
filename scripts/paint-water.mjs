@@ -19,6 +19,10 @@
  * COMPONENTES CONEXOS grandes (rio e mar). A separação é folgada: os corpos
  * d'água têm dezenas de milhares de pixels e os telhados, poucos milhares.
  *
+ * Tamanho, porém, não separa de CÉU — o fundo atrás do castelo é azul, é
+ * grande e passava no corte. Quem separa é o passo 5: água que não encosta em
+ * chão nenhum não é água, é fundo, e volta a ser parede.
+ *
  * É um passo de asset, não de execução: roda à mão (`npm run paint:water`),
  * o resultado é revisável no editor de imagem e vai versionado. Rodar de novo
  * numa máscara já pintada dá o mesmo resultado (o azul continua sendo "não
@@ -78,9 +82,23 @@ const W = mascara.width;
 const H = mascara.height;
 const total = W * H;
 
+/**
+ * `--only-prune` roda SÓ o passo 5 (fundo sem contato com chão).
+ *
+ * Existe porque este script não é idempotente: o passo 3 come mais uma faixa
+ * de praia a cada rodada, então uma máscara já pintada não pode ser passada
+ * pelo script inteiro só para corrigir uma coisa. Medido nesta máscara, a
+ * segunda rodada mexia em 2343 px de margem espalhados pelo mapa — exatamente
+ * o que não se quer tocar.
+ *
+ * Com a flag, o passo 5 é uma correção cirúrgica e conferível: ele só APAGA
+ * água que não encosta em chão, e não tem como criar água nova.
+ */
+const somentePoda = process.argv.includes("--only-prune");
+
 // 1. candidatos: bloqueado na máscara E azul na arte.
 const agua = new Uint8Array(total);
-for (let i = 0; i < total; i++) {
+for (let i = 0; i < total && !somentePoda; i++) {
     if (mascara.data[i * 4] > 128) continue; // já é chão livre
     if (arte.data[i * 4 + 2] > arte.data[i * 4] + MARGEM_AZUL) agua[i] = 1;
 }
@@ -90,7 +108,7 @@ const fila = new Int32Array(total);
 const visto = new Uint8Array(total);
 let pintados = 0;
 
-for (let inicio = 0; inicio < total; inicio++) {
+for (let inicio = 0; inicio < total && !somentePoda; inicio++) {
     if (!agua[inicio] || visto[inicio]) continue;
 
     let cabeca = 0;
@@ -154,11 +172,13 @@ const espalha = (dist, semente) => {
 };
 
 const ehAgua = (i) => mascara.data[i * 4 + 2] > 128 && mascara.data[i * 4] <= 128;
-espalha(distAgua, (i) => ehAgua(i));
-espalha(distChao, (i) => mascara.data[i * 4] > 128);
+if (!somentePoda) {
+    espalha(distAgua, (i) => ehAgua(i));
+    espalha(distChao, (i) => mascara.data[i * 4] > 128);
+}
 
 let praia = 0;
-for (let i = 0; i < total; i++) {
+for (let i = 0; i < total && !somentePoda; i++) {
     if (distAgua[i] <= 0 || distChao[i] <= 0) continue;
     if (distAgua[i] > PRAIA || distChao[i] > PRAIA) continue;
 
@@ -188,7 +208,7 @@ const bloqueado = (i) => !ehChao(i) && !ehAgua(i);
 const componente = new Int32Array(total).fill(-1);
 let sujeira = 0;
 
-for (let inicio = 0; inicio < total; inicio++) {
+for (let inicio = 0; inicio < total && !somentePoda; inicio++) {
     if (!bloqueado(inicio) || componente[inicio] >= 0) continue;
 
     let cabeca = 0;
@@ -232,13 +252,81 @@ for (let inicio = 0; inicio < total; inicio++) {
     }
 }
 
+// 5. sobra: corpo d'água que não encosta em chão nenhum.
+//
+// O corte de tamanho do passo 2 separa rio e mar de TELHADO azul, que é
+// pequeno. Ele não separa de CÉU: o fundo atrás do castelo é azul na arte,
+// está bloqueado na máscara e tem dezenas de milhares de pixels — passava
+// pelo `MIN_AREA` e virava água navegável no canto superior esquerdo, num
+// bolsão que nenhum personagem alcança a pé.
+//
+// A regra que separa os dois não é tamanho, é topologia, no mesmo espírito do
+// corte de `paint-bridges.mjs`: **água que não toca chão não é água, é
+// fundo**. Medido nesta máscara — mar: 6132 pixels encostando em chão; rio:
+// 1290; céu: 0, a 194 px de qualquer chão, do outro lado da muralha do
+// castelo. Não é ajuste fino, é zero contra milhares.
+//
+// Roda por último de propósito: antes do passo 3 a praia ainda separa a água
+// do chão livre, e o rio de verdade seria reprovado junto.
+const naoEhAgua = (i) => {
+    mascara.data[i * 4] = 0;
+    mascara.data[i * 4 + 1] = 0;
+    mascara.data[i * 4 + 2] = 0;
+    mascara.data[i * 4 + 3] = 255;
+};
+
+const compAgua = new Int32Array(total).fill(-1);
+let fundo = 0;
+
+for (let inicio = 0; inicio < total; inicio++) {
+    if (!ehAgua(inicio) || compAgua[inicio] >= 0) continue;
+
+    let cabeca = 0;
+    let cauda = 0;
+    fila[cauda++] = inicio;
+    compAgua[inicio] = inicio;
+    let tocaChao = false;
+
+    while (cabeca < cauda) {
+        const i = fila[cabeca++];
+        const x = i % W;
+        const y = (i / W) | 0;
+        const vizinhos = [
+            x > 0 ? i - 1 : -1,
+            x < W - 1 ? i + 1 : -1,
+            y > 0 ? i - W : -1,
+            y < H - 1 ? i + W : -1,
+        ];
+        for (const v of vizinhos) {
+            if (v < 0) continue;
+            if (!ehAgua(v)) {
+                if (ehChao(v)) tocaChao = true;
+                continue;
+            }
+            if (compAgua[v] >= 0) continue;
+            compAgua[v] = inicio;
+            fila[cauda++] = v;
+        }
+    }
+
+    if (tocaChao) continue;
+
+    // Volta a ser parede: é o que o fundo do desenho sempre foi, e o que a
+    // máscara dizia antes de este script rodar.
+    for (let k = 0; k < cauda; k++) {
+        naoEhAgua(fila[k]);
+        fundo++;
+    }
+}
+
 fs.writeFileSync(maskPath, PNG.sync.write(mascara));
 console.log(`água pintada em ${maskPath}`);
 let azul = 0;
 for (let i = 0; i < total; i++) if (ehAgua(i)) azul++;
 
 console.log(
-    `  +${pintados} px de corpo d'água, +${praia} px de praia, +${sujeira} px de respingo` +
+    `  +${pintados} px de corpo d'água, +${praia} px de praia, +${sujeira} px de respingo,` +
+    ` -${fundo} px de fundo sem contato com chão` +
     ` — total de água: ${azul} px (${((100 * azul) / total).toFixed(1)}% do mapa)`,
 );
 console.log("Rode `npm run sync:mask` em seguida e commite as duas cópias.");

@@ -10,7 +10,7 @@
 import {
     RANKS, RankKey, RankConfig, AURA_KILL_VALUES, Team,
     WORLD_WIDTH, WORLD_HEIGHT, HIT_INVULN_MS,
-    levelFromXp, rankKeyForLevel, XP_PER_LEVEL,
+    levelFromXp, rankKeyForLevel, XP_PER_LEVEL, MAX_LEVEL,
 } from "./constants.js";
 import { clamp } from "./mathx.js";
 
@@ -291,10 +291,38 @@ export class Actor {
         const nivel = levelFromXp(this.xp);
         if (nivel <= this.level) return false;
 
+        this.applyLevel(nivel);
+        return true;
+    }
+
+    /**
+     * Vira a peça do nível pedido: rank, vida máxima e vida cheia.
+     *
+     * É o corpo do que `addExperience` já fazia ao subir de nível, isolado
+     * para que a promoção de debug (`debugCycleRank`) passe EXATAMENTE por
+     * aqui em vez de repetir os mesmos três passos. Todo o resto — velocidade,
+     * forma do golpe, alcance, massa, raio da elipse, sprite — deriva de
+     * `rankKey` sozinho, dos dois lados.
+     */
+    private applyLevel(nivel: number): void {
         this.setRank(rankKeyForLevel(nivel));
         this.maxHealth = this.rank.health;
         this.currentHealth = this.maxHealth;
-        return true;
+    }
+
+    /**
+     * FERRAMENTA DE DEBUG: avança uma peça, e da rainha volta ao peão.
+     *
+     * Não existe atalho de XP aqui: a XP é levada ao PISO do nível de destino
+     * (a mesma conta de `resetProgressOnDeath`) e a peça é trocada pelo mesmo
+     * `applyLevel` da promoção normal. Assim o estado continua coerente — quem
+     * for jogado de volta a peão volta com 0 de XP e torna a subir matando,
+     * como qualquer um. Nada no caminho normal de XP é afrouxado.
+     */
+    debugCycleRank(): void {
+        const alvo = this.level >= MAX_LEVEL ? 1 : this.level + 1;
+        this.xp = (alvo - 1) * XP_PER_LEVEL;
+        this.applyLevel(alvo);
     }
 
     /**

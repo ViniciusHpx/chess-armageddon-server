@@ -16,6 +16,7 @@ import {
  *   "a"  1 | 0         1 = apertou o botão de ataque, 0 = soltou
  *   "d"  -             pediu um dash (direção e cooldown quem decide é o World)
  *   "r"  -             pediu para renascer (botão RENASCER)
+ *   "dbg" -            DEBUG: avança a peça no ciclo (botão DEBUG do HUD)
  *   "rm" -             aceitou a revanche (só depois do fim da partida)
  *
  * Entrada: o cliente cria a sala (`client.create("arena", { name, bots, mode })`)
@@ -98,6 +99,18 @@ export class ArenaRoom extends Room {
         r: (client: Client) => {
             const actor = this.actorOf(client);
             if (actor) this.world.requestRespawn(actor);
+        },
+
+        /**
+         * DEBUG: avança a peça do próprio ator (peão → ... → rainha → peão).
+         *
+         * Sem corpo, como o dash: o cliente só diz *apertei*, e qual peça vem
+         * a seguir quem decide é o `World` — não há nada aqui que o cliente
+         * possa pedir de fora do ciclo. É o botão DEBUG do HUD.
+         */
+        dbg: (client: Client) => {
+            const actor = this.actorOf(client);
+            if (actor) this.world.debugCycleRank(actor);
         },
 
         /**

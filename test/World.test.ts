@@ -8,7 +8,7 @@ import {
     BOT_ATTACK_COOLDOWN_MS, RESPAWN_INVULN_MS, attackHalfBand, attackReach,
     KNOCKBACK_DECAY_MS, knockbackSpeed, BOT_CHARGE_HOLD_MS,
     ATTACK_WINDUP_MAX_MS, ATTACK_RECOVERY_MAX_MS, chargeDamage, chargeAreaMult,
-    XP_PER_KILL, XP_PER_LEVEL, MAX_LEVEL, levelFromXp, xpProgress,
+    XP_PER_KILL, XP_PER_LEVEL, MAX_LEVEL, RANK_ORDER, levelFromXp, xpProgress,
     WORLD_WIDTH, WORLD_HEIGHT, HALF_WORLD_WIDTH, SPAWN_ZONE, SPAWN_MIN_DISTANCE,
     BOT_STUCK_CHECK_MS, TEAM_SIZE, BOT_UNSTICK_MS,
     CHARGE_MOVE_FACTOR, ATTACK_MOVE_FACTOR, movementFactor,
@@ -1470,6 +1470,104 @@ describe("World (simulação)", () => {
      * castelo mudar — e é assim que ele pegaria de volta a `SPAWN_ZONE`, cujo
      * canto sul chega a 808 px (e transborda o portão).
      */
+    it("o botão DEBUG cicla peão -> ... -> rainha -> peão", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        actor.teleport(LIVRE_X, LIVRE_Y);
+
+        assert.strictEqual(actor.rankKey, "PAWN", "cenário: começa peão");
+
+        // Uma volta inteira mais um passo: tem de bater com RANK_ORDER e
+        // voltar ao começo, sem parar na rainha nem inventar peça nova.
+        const vistos: string[] = [];
+        for (let i = 0; i < RANK_ORDER.length; i++) {
+            world.debugCycleRank(actor);
+            vistos.push(actor.rankKey);
+        }
+
+        assert.deepStrictEqual(
+            vistos,
+            [...RANK_ORDER.slice(1), RANK_ORDER[0]],
+            "a ordem tem de ser a de RANK_ORDER, com a rainha voltando ao peão",
+        );
+
+        // O ciclo não tem fim: outra volta dá exatamente o mesmo.
+        const segundaVolta: string[] = [];
+        for (let i = 0; i < RANK_ORDER.length; i++) {
+            world.debugCycleRank(actor);
+            segundaVolta.push(actor.rankKey);
+        }
+        assert.deepStrictEqual(segundaVolta, vistos, "a segunda volta é igual à primeira");
+    });
+
+    it("o DEBUG usa a promoção de verdade: vida, XP e geometria acompanham", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        actor.teleport(LIVRE_X, LIVRE_Y);
+
+        const rxPeao = actor.collisionRx;
+        actor.currentHealth = 7;
+
+        world.debugCycleRank(actor);
+        assert.strictEqual(actor.rankKey, "TOWER");
+        assert.strictEqual(actor.maxHealth, RANKS.TOWER.health, "vida máxima é a do rank novo");
+        assert.strictEqual(actor.currentHealth, actor.maxHealth, "promoção cura, como a normal");
+        assert.strictEqual(actor.level, 2, "o nível deriva do rank");
+
+        // Até a rainha: da torre (nível 2) faltam MAX_LEVEL - 2 cliques.
+        for (let i = actor.level; i < MAX_LEVEL; i++) world.debugCycleRank(actor);
+        assert.strictEqual(actor.rankKey, "QUEEN");
+        assert.ok(actor.collisionRx > rxPeao, "a rainha é maior que o peão");
+        assert.strictEqual(actor.rank.speed, RANKS.QUEEN.speed, "velocidade vem do rank");
+
+        // A XP fica no PISO do nível — o sistema normal continua valendo por
+        // cima, sem atalho: mais um abate NÃO promove além do teto.
+        assert.strictEqual(actor.xp, (MAX_LEVEL - 1) * XP_PER_LEVEL);
+        actor.addExperience(XP_PER_KILL);
+        assert.strictEqual(actor.rankKey, "QUEEN", "no teto continua rainha");
+
+        // E de volta ao peão a XP zera, então subir exige matar de novo.
+        world.debugCycleRank(actor);
+        assert.strictEqual(actor.rankKey, "PAWN");
+        assert.strictEqual(actor.xp, 0, "peão de novo começa do zero");
+        assert.strictEqual(actor.addExperience(XP_PER_LEVEL - 1), false, "XP parcial não promove");
+        assert.strictEqual(actor.rankKey, "PAWN");
+        assert.strictEqual(actor.addExperience(1), true, "cheio o nível, promove pelo caminho normal");
+        assert.strictEqual(actor.rankKey, "TOWER");
+    });
+
+    it("o DEBUG não promove ninguém para dentro da parede", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        actor.teleport(LIVRE_X, LIVRE_Y);
+
+        // Uma volta inteira a partir de vários pontos do mapa: em nenhum deles
+        // a troca de peça pode terminar em posição inválida — a rainha é bem
+        // maior que o peão e um vão apertado entalaria.
+        for (const [x, y] of [[LIVRE_X, LIVRE_Y], [1600, 840], [530, 760], [1300, 740]]) {
+            actor.teleport(x, y);
+            for (let i = 0; i < RANK_ORDER.length * 2; i++) {
+                world.debugCycleRank(actor);
+                assert.ok(
+                    world.mask.canStand(
+                        actor.x, actor.ellipseCenter().y, actor.collisionRx, actor.collisionRy,
+                    ),
+                    `${actor.rankKey} ficou em posição inválida partindo de (${x}, ${y})`,
+                );
+            }
+        }
+    });
+
+    it("morto não troca de peça pelo DEBUG", () => {
+        const world = new World();
+        const actor = world.addPlayer("a", "ally", "A");
+        actor.teleport(LIVRE_X, LIVRE_Y);
+        actor.alive = false;
+
+        assert.strictEqual(world.debugCycleRank(actor), false);
+        assert.strictEqual(actor.rankKey, "PAWN");
+    });
+
     it("a área de cura fica no fundo do pátio, longe do portão", () => {
         const world = new World();
         const S = 8;
