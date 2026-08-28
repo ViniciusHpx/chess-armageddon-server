@@ -70,17 +70,34 @@ export class ArenaRoom extends Room {
     private world = new World();
 
     messages = {
-        /** Vetor de movimento. O World normaliza, limita e ordena por `s`. */
-        i: (client: Client, message: { dx: number; dy: number; s: number }) => {
+        /**
+         * Vetor de movimento e MIRA do ataque. O World normaliza, limita e
+         * ordena por `s`.
+         *
+         * `ax`/`ay` (a mira) vêm no mesmo pacote por serem entrada como
+         * qualquer outra — e assim o golpe e o dash leem a mesma "última
+         * entrada recebida", sem mensagem nova. Cliente antigo não manda os
+         * dois campos: viram `NaN` aqui e o `setInput` os trata como neutros.
+         */
+        i: (client: Client, message: { dx: number; dy: number; s: number; ax?: number; ay?: number }) => {
             const actor = this.actorOf(client);
             if (!actor || !message) return;
-            this.world.setInput(actor, Number(message.dx), Number(message.dy), Number(message.s));
+            this.world.setInput(
+                actor, Number(message.dx), Number(message.dy), Number(message.s),
+                Number(message.ax), Number(message.ay),
+            );
         },
 
-        /** 1 = começou a carregar, 0 = soltou. Quem cronometra é o servidor. */
+        /** 1 = apertou o botão, 0 = soltou. Quem cronometra é o servidor. */
         a: (client: Client, message: number) => {
             const actor = this.actorOf(client);
             if (!actor) return;
+
+            // "Segurando" é entrada do jogador, então fica aqui e não dentro do
+            // `startCharge` — aquele também é o caminho dos BOTS, que decidem
+            // cada golpe por conta e nunca "seguram" nada.
+            actor.attackHeld = !!message;
+
             if (message) this.world.startCharge(actor);
             else this.world.releaseAttack(actor);
         },
@@ -318,6 +335,7 @@ export class ArenaRoom extends Room {
         s.attacking = actor.attacking;
         s.atkPower = Math.round(actor.chargePower * 100);
         s.atkSide = actor.atkSide;
+        s.atkDir = actor.atkDir;
         s.dashing = actor.isDashing(this.world.now);
         // Bots não têm botão para desenhar: economiza um byte por patch por bot.
         s.dashCd = actor.isBot

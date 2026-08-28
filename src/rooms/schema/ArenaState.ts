@@ -52,8 +52,20 @@ export class ActorState extends Schema {
      */
     @type("uint8") atkPower: number = 0;
 
-    /** Lado (em Y) da perna do L do cavalo: -1 ou 1. */
+    /** Lado da perna do L do cavalo, na perpendicular ao golpe: -1 ou 1. */
     @type("int8") atkSide: number = 1;
+
+    /**
+     * Direção do golpe em curso, como índice em `ATTACK_DIR_COUNT` (0..7).
+     *
+     * Trafega o ÍNDICE, e não o ângulo, pelo mesmo motivo de `atkPower`
+     * trafegar a potência final: os dois lados derivam o ângulo do mesmo
+     * índice, então a forma desenhada é exatamente a que causou o dano — se
+     * cada um convertesse um ângulo, os arredondamentos divergiriam.
+     *
+     * A ORDEM da lista é contrato de rede, como `RANK_ORDER`.
+     */
+    @type("uint8") atkDir: number = 0;
 
     /**
      * Dash em curso. Só serve para o cliente disparar o efeito visual dos

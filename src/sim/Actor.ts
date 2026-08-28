@@ -76,8 +76,24 @@ export class Actor {
     chargePower = 0;
     /** Instante a partir do qual pode atacar ou carregar de novo. */
     attackReadyAt = 0;
-    /** Para qual lado (em Y) sai a perna do L do cavalo: -1 ou 1. */
+    /**
+     * Para qual lado sai a perna do L do cavalo: -1 ou 1.
+     *
+     * O lado é medido na PERPENDICULAR ao golpe (ver `attackSideFor`), não no
+     * eixo Y do mundo. Enquanto o golpe só saía em X as duas coisas eram a
+     * mesma; com o golpe direcional, o Y do mundo mandaria a perna para o lado
+     * errado nas diagonais.
+     */
     atkSide = 1;
+
+    /**
+     * Direção do golpe em curso, como índice em 0..`ATTACK_DIR_COUNT`.
+     *
+     * Congelada em `beginAttack`, pelo mesmo motivo de `atkSide`: o cliente
+     * desenha esta direção durante todo o golpe, então mudá-la no meio faria o
+     * dano sair de onde não apareceu.
+     */
+    atkDir = 0;
     /** Alvos já atingidos pelo golpe atual — evita dano duplo. */
     hitThisAttack = new Set<string>();
 
@@ -160,6 +176,29 @@ export class Actor {
     // --- entrada (humanos) ---
     inputDx = 0;
     inputDy = 0;
+
+    /**
+     * Vetor de MIRA do ataque, independente do de movimento: é ele que deixa o
+     * jogador andar para um lado e bater para outro.
+     *
+     * Chega no mesmo pacote `"i"` do movimento, e por isso é lido do mesmo
+     * jeito que `requestDash` lê a direção — "a última entrada recebida". Não
+     * precisa ser unitário; quem decide o que ele significa é `World.attackDir`,
+     * que aplica a zona morta e o encaixe nas oito direções. Neutro (zerado)
+     * significa "sem mira", e aí o golpe sai para onde a peça olha.
+     */
+    aimDx = 0;
+    aimDy = 0;
+
+    /**
+     * Botão de ataque SEGURADO.
+     *
+     * É o que sustenta o ataque contínuo: enquanto estiver de pé,
+     * `World.stepPlayer` tenta desferir o golpe todo tick, e quem dá o ritmo é
+     * o `attackReadyAt` que já existia (piso: `ATTACK_INTERVAL`). Só o jogador
+     * escreve aqui — bots decidem cada golpe em `stepBot`.
+     */
+    attackHeld = false;
     /**
      * Sequência do último pacote de entrada processado.
      *

@@ -18,9 +18,7 @@ import { Actor } from "./Actor.js";
 import { CollisionMask } from "./CollisionMask.js";
 import { NavGrid } from "./NavGrid.js";
 import { resolveCollisions } from "./CollisionResolver.js";
-import {
-    rectangleOverlapsEllipse, circleOverlapsEllipse, diamondOverlapsEllipse, Rect,
-} from "./geometry.js";
+import { attackShapes, attackShapeHitsEllipse, attackSideFor } from "./geometry.js";
 import { angleBetween, clamp, distance, randInt } from "./mathx.js";
 import {
     BOT_ATTACK_COOLDOWN_MS, BOT_ATTACK_RANGE_SLACK, movementFactor,
@@ -38,6 +36,7 @@ import {
     attackHalfBand, attackReach, knockbackSpeed, XP_PER_KILL,
     attackRecoveryMs, attackWindupMs, chargeAreaMult, chargeDamage, chargePower,
     CHARGED_ATTACK_ENABLED,
+    ATTACK_AIM_DEADZONE, ATTACK_INTERVAL, attackDirAngle, attackDirIndex,
 } from "./constants.js";
 
 /** Evento de combate emitido para o cliente reagir (som, shake, feedback). */
@@ -271,8 +270,17 @@ export class World {
      * reconciliar a previsão. Pacote com seq menor ou igual ao já processado é
      * reordenação (ou cliente adulterado) e o vetor é ignorado — mas o
      * `lastInputAt` ainda conta, senão INPUT_TIMEOUT_MS mataria o movimento.
+     *
+     * `ax`/`ay` são a MIRA do ataque, que vem no mesmo pacote por ser entrada
+     * como qualquer outra — e assim o dash e o golpe leem a mesma "última
+     * entrada recebida", sem mensagem nova no protocolo. Cliente antigo não
+     * manda os dois campos: `undefined` cai no `Number.isFinite` abaixo e a
+     * mira fica neutra, ou seja, o golpe sai pelo `flipX` como sempre saiu.
      */
-    setInput(actor: Actor, dx: number, dy: number, seq: number): void {
+    setInput(
+        actor: Actor, dx: number, dy: number, seq: number,
+        ax = 0, ay = 0,
+    ): void {
         actor.lastInputAt = this.now;
 
         if (!Number.isFinite(seq) || seq <= actor.inputSeq) return;
@@ -286,6 +294,11 @@ export class World {
         actor.inputDx = clamp(dx, -1, 1);
         actor.inputDy = clamp(dy, -1, 1);
         actor.inputSeq = seq;
+
+        // A mira só precisa da DIREÇÃO, então basta limitar o módulo para o
+        // cliente não inflar a zona morta com um vetor gigante.
+        actor.aimDx = Number.isFinite(ax) ? clamp(ax, -1, 1) : 0;
+        actor.aimDy = Number.isFinite(ay) ? clamp(ay, -1, 1) : 0;
     }
 
     startCharge(actor: Actor): void {
@@ -612,9 +625,16 @@ export class World {
         // Cliente calado: para de andar. Sem isto, uma aba em segundo plano
         // (o Phaser pausa o loop e ninguém mais envia nada) deixa o boneco
         // correndo com o último vetor até bater na borda do mapa.
+        //
+        // O botão de ataque cai junto, e pelo mesmo motivo: `attackHeld` só é
+        // desligado pelo "soltei" do cliente, então um cliente que emudece
+        // segurando o botão deixaria o personagem batendo sozinho para sempre.
         if (this.now - actor.lastInputAt > INPUT_TIMEOUT_MS) {
             actor.inputDx = 0;
             actor.inputDy = 0;
+            actor.aimDx = 0;
+            actor.aimDy = 0;
+            actor.attackHeld = false;
         }
 
         // Dash manda na velocidade enquanto dura: a entrada do jogador não
@@ -627,6 +647,19 @@ export class World {
             actor.vy = actor.dashDirY * speed;
             return;
         }
+
+        // ATAQUE CONTÍNUO: com o botão segurado o golpe se repete sozinho, e
+        // quem dá o ritmo é o `attackReadyAt` — cujo piso é `ATTACK_INTERVAL`.
+        //
+        // Chamar isto todo tick é seguro e é justamente o ponto: `startCharge`
+        // sai na hora se o ator já está atacando, carregando ou em recuperação,
+        // então não existe caminho para dois golpes saírem juntos nem para um
+        // temporizador paralelo se acumular. Fica depois do dash porque quem
+        // está no impulso não ataca.
+        //
+        // Só vale com a carga desligada: com `CHARGED_ATTACK_ENABLED`, segurar
+        // o botão significa CARREGAR, e repetir atropelaria a carga.
+        if (actor.attackHeld && !CHARGED_ATTACK_ENABLED) this.startCharge(actor);
 
         // Golpe em curso anda devagar; carregando, mais devagar ainda; dentro
         // d'água, mais devagar ainda. O fator sai de `movementFactor`, o mesmo
@@ -1037,6 +1070,21 @@ export class World {
         return nearest;
     }
 
+    /**
+     * Direção do golpe que está saindo agora.
+     *
+     * A mira manda, se houver; sem mira (zona morta) o golpe sai para o lado
+     * que a peça olha, que é o comportamento de sempre. É esse fallback que
+     * mantém teclado e BOTS idênticos ao que eram: nenhum dos dois escreve em
+     * `aimDx`/`aimDy`.
+     */
+    private attackDir(actor: Actor): number {
+        if (Math.hypot(actor.aimDx, actor.aimDy) >= ATTACK_AIM_DEADZONE) {
+            return attackDirIndex(actor.aimDx, actor.aimDy);
+        }
+        return attackDirIndex(actor.flipX ? -1 : 1, 0);
+    }
+
     private beginAttack(actor: Actor, power: number): void {
         if (actor.attacking || !actor.alive) return;
         if (this.now < actor.attackReadyAt) return;
@@ -1046,96 +1094,53 @@ export class World {
         // Golpe mais carregado demora mais para sair: é essa janela que o alvo
         // tem para esquivar do golpe pesado.
         actor.attackHitAt = this.now + attackWindupMs(power);
-        actor.attackReadyAt = actor.attackHitAt + attackRecoveryMs(power);
+        // A recuperação é a desvantagem do golpe carregado; `ATTACK_INTERVAL` é
+        // o PISO entre dois golpes, e é ele que dá ritmo ao ataque contínuo.
+        // Vale o maior dos dois, num gate só — não existe segundo temporizador.
+        actor.attackReadyAt = Math.max(
+            actor.attackHitAt + attackRecoveryMs(power),
+            this.now + ATTACK_INTERVAL,
+        );
         actor.hitThisAttack.clear();
 
-        // A perna do L do cavalo aponta para o inimigo mais próximo. Fica
-        // congelada aqui: o cliente desenha esse mesmo lado durante todo o
-        // golpe, então recalcular no impacto (como no offline) faria o dano
-        // sair de um lugar diferente do que apareceu na tela.
+        // Direção e lado da perna do L ficam CONGELADOS aqui: o cliente desenha
+        // os dois durante todo o golpe, então recalcular no impacto (como no
+        // offline) faria o dano sair de um lugar diferente do que apareceu.
+        actor.atkDir = this.attackDir(actor);
+
         const nearest = this.findNearestOpponent(actor);
-        actor.atkSide = nearest && nearest.y > actor.y ? 1 : -1;
+        actor.atkSide = nearest
+            ? attackSideFor(actor.atkDir, actor.x, actor.y, nearest.x, nearest.y)
+            : -1;
     }
 
     /**
-     * Aplica o dano do golpe. A geometria tem de bater exatamente com o que o
-     * cliente desenha em `ArenaActor.drawAttackVisual()`.
+     * Aplica o dano do golpe.
+     *
+     * A forma sai de `attackShapes`, a MESMA função que o cliente usa para
+     * desenhar — antes cada lado montava a própria geometria num `switch`
+     * paralelo. Aqui só resta percorrer os alvos.
      */
     private executeAttackHit(attacker: Actor): void {
-        const atk = attacker.rank.attack;
         const center = attacker.ellipseCenter();
-        const dir = attacker.flipX ? -1 : 1;
-        const startX = center.x + dir * attacker.collisionRx;
-        const startY = center.y;
 
         // Área e dano saem da mesma potência; os dois já vêm com teto embutido
-        // (AREA_MULT_MAX e DAMAGE_MAX). A geometria abaixo não mudou: continua
-        // recebendo um multiplicador, que agora é fracionário.
+        // (AREA_MULT_MAX e DAMAGE_MAX).
         const mult = chargeAreaMult(attacker.chargePower);
         const damage = chargeDamage(attacker.chargePower);
-        const targets = this.opponentsOf(attacker);
 
-        const hits = (test: (t: Actor) => boolean) => {
-            for (const target of targets) {
-                if (attacker.hitThisAttack.has(target.id)) continue;
-                if (test(target)) this.applyDamage(attacker, target, damage);
-            }
-        };
+        const forma = attackShapes(
+            attacker.rank.attack, mult, center.x, center.y,
+            attacker.collisionRx, attacker.collisionRy,
+            attackDirAngle(attacker.atkDir), attacker.atkSide,
+        );
 
-        switch (atk.type) {
-            case "rectangle": {
-                const w = atk.length * mult;
-                const h = atk.width * mult;
-                const rect: Rect = { x: dir === 1 ? startX : startX - w, y: startY - h / 2, w, h };
-                hits((t) => {
-                    const c = t.ellipseCenter();
-                    return rectangleOverlapsEllipse(rect, c.x, c.y, t.collisionRx, t.collisionRy);
-                });
-                break;
-            }
+        for (const target of this.opponentsOf(attacker)) {
+            if (attacker.hitThisAttack.has(target.id)) continue;
 
-            case "circle": {
-                const radius = atk.radius * mult;
-                hits((t) => {
-                    const c = t.ellipseCenter();
-                    return circleOverlapsEllipse(center.x, center.y, radius, c.x, c.y, t.collisionRx, t.collisionRy);
-                });
-                break;
-            }
-
-            case "lshape": {
-                const forwardLength = atk.forwardLength * mult;
-                const sideLength = atk.sideLength * mult;
-                const width = atk.width * mult;
-
-                const forwardX = dir === 1 ? startX : startX - forwardLength;
-                const forwardRect: Rect = {
-                    x: forwardX, y: startY - width / 2, w: forwardLength, h: width,
-                };
-
-                const forwardEndX = startX + dir * forwardLength;
-                const sideRect: Rect = {
-                    x: forwardEndX - width / 2,
-                    y: startY + (attacker.atkSide * sideLength) / 2 - sideLength / 2,
-                    w: width,
-                    h: sideLength,
-                };
-
-                hits((t) => {
-                    const c = t.ellipseCenter();
-                    return rectangleOverlapsEllipse(forwardRect, c.x, c.y, t.collisionRx, t.collisionRy)
-                        || rectangleOverlapsEllipse(sideRect, c.x, c.y, t.collisionRx, t.collisionRy);
-                });
-                break;
-            }
-
-            case "diamond": {
-                const radius = atk.radius * mult;
-                hits((t) => {
-                    const c = t.ellipseCenter();
-                    return diamondOverlapsEllipse(center.x, center.y, radius, c.x, c.y, t.collisionRx, t.collisionRy);
-                });
-                break;
+            const c = target.ellipseCenter();
+            if (attackShapeHitsEllipse(forma, c.x, c.y, target.collisionRx, target.collisionRy)) {
+                this.applyDamage(attacker, target, damage);
             }
         }
     }
@@ -1228,6 +1233,9 @@ export class World {
         actor.knockbackVy = 0;
         actor.inputDx = 0;
         actor.inputDy = 0;
+        // Solta o botão de ataque junto: sem isto, quem morreu segurando
+        // voltaria batendo sozinho no instante do respawn.
+        actor.attackHeld = false;
         actor.cancelAttack();
         actor.cancelDash();
         actor.clearPath();
