@@ -17,7 +17,7 @@ import {
     attackWindupMs, attackRecoveryMs, chargePower,
     CHARGED_ATTACK_ENABLED, BASE_HEAL_PER_SECOND, insideHealZone, HEAL_ZONE, DASH_DISTANCE,
     canPhaseDash, WATER_SPEED_FACTOR,
-    ATTACK_INTERVAL, ATTACK_DIR_COUNT, ATTACK_AIM_DEADZONE, attackDirIndex, attackDirAngle,
+    ATTACK_INTERVAL, ATTACK_AIM_DEADZONE, attackAimAngle,
 } from "../src/sim/constants.js";
 
 /**
@@ -2541,24 +2541,64 @@ describe("World (simulação)", () => {
         world.setInput(actor, dx, dy, actor.inputSeq + 1, ax, ay);
     }
 
-    it("as oito direções vão e voltam sem perder precisão", () => {
-        // Índice -> vetor -> índice tem de fechar em todas as oito, senão o
-        // golpe sairia numa direção vizinha à que o jogador apontou.
-        for (let i = 0; i < ATTACK_DIR_COUNT; i++) {
-            const ang = attackDirAngle(i);
-            assert.strictEqual(
-                attackDirIndex(Math.cos(ang), Math.sin(ang)), i,
-                `direção ${i} não fecha`,
+    it("a direção do golpe é o ângulo do vetor, sem encaixe em oito", () => {
+        // Regressão da limitação antiga: a mira era encaixada no múltiplo de
+        // 45° mais próximo, então 20° e 30° saíam os DOIS como 45°.
+        for (const grausW of [0, 5, 20, 33, 47, 91, 179, -12, -100]) {
+            const rad = (grausW * Math.PI) / 180;
+            const ang = attackAimAngle(Math.cos(rad), Math.sin(rad), false);
+            assert.ok(
+                Math.abs(Math.atan2(Math.sin(ang - rad), Math.cos(ang - rad))) < 1e-9,
+                `${grausW}° virou ${(ang * 180) / Math.PI}°`,
             );
         }
 
-        // O índice 0 é leste e a lista gira no sentido do Y da tela (para
-        // baixo). É contrato de rede: mudar de um lado só gira o golpe de todo
-        // mundo.
-        assert.strictEqual(attackDirIndex(1, 0), 0, "leste");
-        assert.strictEqual(attackDirIndex(0, 1), 2, "sul (Y cresce para baixo)");
-        assert.strictEqual(attackDirIndex(-1, 0), 4, "oeste");
-        assert.strictEqual(attackDirIndex(0, -1), 6, "norte");
+        // Vetores vizinhos NÃO podem colapsar na mesma direção.
+        const a = attackAimAngle(Math.cos(0.35), Math.sin(0.35), false);
+        const b = attackAimAngle(Math.cos(0.36), Math.sin(0.36), false);
+        assert.notStrictEqual(a, b, "duas miras distintas viraram a mesma direção");
+
+        // Sentido do mundo: leste é 0 e o Y da tela cresce para BAIXO.
+        assert.strictEqual(attackAimAngle(1, 0, false), 0, "leste");
+        assert.strictEqual(attackAimAngle(0, 1, false), Math.PI / 2, "sul");
+        assert.strictEqual(attackAimAngle(0, -1, false), -Math.PI / 2, "norte");
+
+        // Sem mira (zona morta, vetor nulo ou lixo) manda o `flipX`.
+        assert.strictEqual(attackAimAngle(0, 0, false), 0, "sem mira, virado ao leste");
+        assert.strictEqual(attackAimAngle(0, 0, true), Math.PI, "sem mira, virado ao oeste");
+        assert.strictEqual(attackAimAngle(NaN, 1, false), 0, "mira inválida vira fallback");
+        assert.strictEqual(
+            attackAimAngle(Infinity, Infinity, true), Math.PI,
+            "mira infinita vira fallback",
+        );
+    });
+
+    it("o golpe sai numa direção INTERMEDIÁRIA às oito antigas", () => {
+        // O caso do pedido: mira a ~20° acima da horizontal. Com o encaixe
+        // antigo isso viraria leste (0°) e o alvo a 20° escaparia.
+        const world = new World();
+        const attacker = world.addPlayer("a", "ally", "A");
+        const alvo = world.addPlayer("b", "enemy", "B");
+
+        const rad = (-20 * Math.PI) / 180; // 20° ACIMA (Y cresce para baixo)
+        const dist = 120;
+        attacker.teleport(FORA_X, FORA_Y);
+        alvo.teleport(FORA_X + Math.cos(rad) * dist, FORA_Y + Math.sin(rad) * dist);
+        alvo.invulnUntil = 0;
+
+        entrada(world, attacker, 0, 0, Math.cos(rad), Math.sin(rad));
+        swing(world, attacker);
+
+        assert.ok(
+            Math.abs(attacker.atkAngle - rad) < 1e-6,
+            `a direção congelada devia ser ${rad}, veio ${attacker.atkAngle}`,
+        );
+
+        advance(world, 300);
+        assert.ok(
+            alvo.currentHealth < alvo.maxHealth,
+            "o alvo na direção exata da mira devia ter sido atingido",
+        );
     });
 
     it("o golpe sai na direção da mira, e não para onde o personagem anda", () => {
@@ -2612,7 +2652,7 @@ describe("World (simulação)", () => {
                 `com flipX=${flip} o golpe devia sair para esse lado`,
             );
             assert.strictEqual(
-                attacker.atkDir, flip ? 4 : 0,
+                attacker.atkAngle, flip ? Math.PI : 0,
                 "sem mira a direção é leste ou oeste, como antes",
             );
         }
@@ -2632,7 +2672,7 @@ describe("World (simulação)", () => {
         swing(world, attacker);
         advance(world, 300);
 
-        assert.strictEqual(attacker.atkDir, 0, "devia ter caído no fallback (leste)");
+        assert.strictEqual(attacker.atkAngle, 0, "devia ter caído no fallback (leste)");
         assert.strictEqual(
             acima.currentHealth, acima.maxHealth,
             "golpe no fallback não pode acertar quem está ao norte",
@@ -2663,7 +2703,11 @@ describe("World (simulação)", () => {
         );
     });
 
-    it("segurar o botão repete o golpe no ritmo de ATTACK_INTERVAL", () => {
+    it("segurar o botão não repete o golpe: uma mira, um golpe", () => {
+        // Regressão do ataque contínuo. Antes, `attackHeld` fazia o `stepPlayer`
+        // chamar `startCharge` a cada tick e a mesma mira rendia um golpe por
+        // `ATTACK_INTERVAL`. Hoje o golpe nasce da MENSAGEM, e a mira que o
+        // gerou é consumida.
         const world = new World();
         const attacker = world.addPlayer("a", "ally", "A");
         const target = world.addPlayer("b", "enemy", "B");
@@ -2675,11 +2719,15 @@ describe("World (simulação)", () => {
         let golpes = 0;
         let antes = false;
 
+        // Mira apontada e botão segurado, exatamente como o cliente reportava.
+        entrada(world, attacker, 0, 0, 1, 0);
         attacker.attackHeld = true;
         world.startCharge(attacker);
 
         const janela = ATTACK_INTERVAL * 4;
         for (let t = 0; t < janela; t += TICK_MS) {
+            // O cliente continua mandando o MESMO arraste, sem recentrar.
+            entrada(world, attacker, 0, 0, 1, 0);
             world.tick(TICK_MS);
             if (attacker.attacking && !antes) golpes++;
             antes = attacker.attacking;
@@ -2688,18 +2736,121 @@ describe("World (simulação)", () => {
             target.invulnUntil = 0;
         }
 
-        // O primeiro golpe saiu fora do laço; dentro da janela cabem os
-        // seguintes, um por intervalo. Uma margem de 1 cobre o alinhamento dos
-        // ticks de 50 ms com os 420 ms do intervalo.
-        const esperado = Math.floor(janela / ATTACK_INTERVAL);
-        assert.ok(
-            golpes >= esperado - 1 && golpes <= esperado,
-            `esperava ~${esperado} golpes repetidos na janela, saíram ${golpes}`,
+        // O `startCharge` acima é a mensagem `"a" 1`: um golpe, e só um. O que
+        // não pode existir é o segundo, o terceiro...
+        assert.strictEqual(
+            golpes, 1,
+            `a mira devia render UM golpe; saíram ${golpes} em ${janela} ms`,
         );
-        assert.ok(golpes > 0, "o botão segurado tem de repetir o golpe");
+        assert.strictEqual(attacker.aimDx, 0, "a mira devia ter sido consumida");
+        assert.strictEqual(
+            attacker.aimReady, false,
+            "sem recentrar o controle, nenhuma direção nova pode ser armada",
+        );
     });
 
-    it("soltar o botão para o ataque contínuo", () => {
+    it("a mira volta a valer depois que o controle recentra", () => {
+        // O outro lado da regra: recentrar e mirar de novo é um golpe novo,
+        // inclusive na MESMA direção.
+        const world = new World();
+        const attacker = world.addPlayer("a", "ally", "A");
+        const acima = world.addPlayer("b", "enemy", "B");
+
+        // O golpe EMPURRA o alvo, então a pose é reposta antes de cada um:
+        // o que se mede aqui é a direção, não o alcance.
+        const posiciona = (): void => {
+            attacker.teleport(FORA_X, FORA_Y);
+            acima.teleport(FORA_X, FORA_Y - 95);
+            acima.invulnUntil = 0;
+            acima.currentHealth = acima.maxHealth;
+        };
+
+        // 1) mira ao norte -> golpe.
+        posiciona();
+        entrada(world, attacker, 0, 0, 0, -1);
+        swing(world, attacker);
+        advance(world, 300);
+
+        assert.ok(
+            acima.currentHealth < acima.maxHealth,
+            "o primeiro golpe devia acertar quem está ao norte",
+        );
+
+        // 2) o mesmo arraste, sem recentrar: a mira é IGNORADA, e o golpe que o
+        //    cliente insistir em pedir sai sem direção (fallback do flipX).
+        entrada(world, attacker, 0, 0, 0, -1);
+        assert.strictEqual(attacker.aimDx, 0, "mira não renovada não pode valer");
+        assert.strictEqual(attacker.aimDy, 0, "mira não renovada não pode valer");
+
+        advance(world, ATTACK_INTERVAL);
+        posiciona();
+        swing(world, attacker);
+        advance(world, 300);
+        assert.strictEqual(
+            acima.currentHealth, acima.maxHealth,
+            "sem mira nova o golpe não pode sair para o norte de novo",
+        );
+
+        // 3) controle de volta ao centro e MESMA direção outra vez: vale.
+        entrada(world, attacker, 0, 0, 0, 0);
+        assert.strictEqual(attacker.aimReady, true, "centrado, pode armar de novo");
+
+        entrada(world, attacker, 0, 0, 0, -1);
+        assert.ok(
+            Math.abs(attacker.aimDy + 1) < 1e-9,
+            "a direção nova devia ter sido aceita",
+        );
+
+        advance(world, ATTACK_INTERVAL);
+        posiciona();
+        swing(world, attacker);
+        advance(world, 300);
+        assert.ok(
+            acima.currentHealth < acima.maxHealth,
+            "com mira nova o golpe sai de novo, na mesma direção",
+        );
+    });
+
+    it("o bot decide uma direção nova a cada golpe", () => {
+        // O golpe consome a mira também para o bot; ele torna a decidir em
+        // `aimAt`, antes de cada golpe. O teste move o alvo de lado entre um
+        // golpe e outro: reusar a direção anterior erraria.
+        const world = new World();
+        const bot = world.addBot("ally");
+        const target = world.addPlayer("b", "enemy", "B");
+
+        const posiciona = (dy: number): void => {
+            bot.teleport(FORA_X, FORA_Y);
+            target.teleport(FORA_X, FORA_Y + dy);
+            target.invulnUntil = 0;
+        };
+
+        // Primeiro golpe: alvo ao NORTE.
+        posiciona(-90);
+        for (let i = 0; i < 120 && target.currentHealth === target.maxHealth; i++) {
+            posiciona(-90);
+            world.tick(TICK_MS);
+        }
+        assert.ok(target.currentHealth < target.maxHealth, "o bot devia ter acertado ao norte");
+        assert.ok(bot.atkAngle < 0, "o primeiro golpe saiu para cima");
+
+        // Alvo agora ao SUL. Se a direção fosse reaproveitada, o golpe
+        // continuaria indo para cima.
+        target.currentHealth = target.maxHealth;
+        posiciona(90);
+        for (let i = 0; i < 120 && target.currentHealth === target.maxHealth; i++) {
+            posiciona(90);
+            world.tick(TICK_MS);
+        }
+
+        assert.ok(target.currentHealth < target.maxHealth, "o bot devia ter acertado ao sul");
+        assert.ok(
+            bot.atkAngle > 0,
+            `o segundo golpe devia ter saído para baixo, saiu em ${bot.atkAngle}`,
+        );
+    });
+
+    it("soltar o botão não deixa golpe pendente", () => {
         const world = new World();
         const attacker = world.addPlayer("a", "ally", "A");
 
@@ -2769,12 +2920,50 @@ describe("World (simulação)", () => {
         world.setInput(attacker, 0, 0, 1, 9999, 0);
         assert.strictEqual(attacker.aimDx, 1, "o módulo da mira é limitado a 1");
 
+        // Limitar o módulo não pode GIRAR a mira: cortando cada eixo por si,
+        // (9999, 1000) viraria 45° em vez dos ~5,7° apontados.
+        world.setInput(attacker, 0, 0, 2, 9999, 1000);
+        assert.ok(Math.hypot(attacker.aimDx, attacker.aimDy) <= 1 + 1e-9);
+        assert.ok(
+            Math.abs(Math.atan2(attacker.aimDy, attacker.aimDx) - Math.atan2(1000, 9999)) < 1e-9,
+            "a normalização girou a mira",
+        );
+
         swing(world, attacker);
         advance(world, 300);
 
         assert.strictEqual(
             longe.currentHealth, longe.maxHealth,
             "a mira não pode aumentar o alcance do golpe",
+        );
+    });
+
+    it("o bot ataca em qualquer direção, não só leste e oeste", () => {
+        // Antes nenhum bot escrevia mira e todos caíam no fallback do `flipX`:
+        // um alvo exatamente ao NORTE era imbatível.
+        const world = new World();
+        const bot = world.addBot("ally");
+        const target = world.addPlayer("b", "enemy", "B");
+
+        const posiciona = (): void => {
+            bot.teleport(FORA_X, FORA_Y);
+            target.teleport(FORA_X, FORA_Y - 90);
+            target.invulnUntil = 0;
+        };
+
+        posiciona();
+        for (let i = 0; i < 120 && target.currentHealth === target.maxHealth; i++) {
+            posiciona(); // o bot anda; a pose é reposta a cada passo
+            world.tick(TICK_MS);
+        }
+
+        assert.ok(
+            target.currentHealth < target.maxHealth,
+            "o bot devia ter acertado o alvo que está ao norte",
+        );
+        assert.ok(
+            Math.abs(bot.atkAngle + Math.PI / 2) < 0.2,
+            `o golpe do bot devia ter saído para o norte, saiu em ${bot.atkAngle}`,
         );
     });
 
@@ -2797,7 +2986,10 @@ describe("World (simulação)", () => {
         swing(world, attacker);
         advance(world, 300);
 
-        assert.strictEqual(attacker.atkDir, 6, "a mira era para o norte");
+        assert.ok(
+            Math.abs(attacker.atkAngle + Math.PI / 2) < 1e-9,
+            "a mira era para o norte",
+        );
         assert.ok(
             target.currentHealth < target.maxHealth,
             "o alvo na ponta do L devia ter sido atingido",

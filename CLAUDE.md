@@ -133,8 +133,8 @@ Cliente → servidor. Nomes curtos porque vão a 20 Hz:
 
 | Tipo | Carga | O quê |
 | --- | --- | --- |
-| `i` | `{dx, dy, s}` | vetor de movimento + sequência do pacote |
-| `a` | `1` \| `0` | apertou / soltou o botão de ataque |
+| `i` | `{dx, dy, s, ax, ay}` | vetor de movimento + sequência do pacote + MIRA do ataque |
+| `a` | `1` \| `0` | apertou / soltou o controle de ataque |
 | `d` | — | pediu dash |
 | `r` | — | pediu para renascer |
 | `dbg` | — | DEBUG: avança a peça no ciclo |
@@ -152,6 +152,14 @@ inflar, e spam cai no `return` do cooldown (e, em rajada, no
 
 - **módulo do vetor de movimento** — `World.setInput` normaliza e clampa; mandar
   `dx: 999` anda igual a `dx: 1`;
+- **módulo do vetor de mira** — normalizado pelo mesmo `setInput` (não clampado
+  eixo a eixo, que GIRARIA a mira), e vetor não finito vira neutro. Só a direção
+  é usada: mira gigante não vira alcance;
+- **mira já usada** — uma direção vale por UM golpe. `beginAttack` a consome e
+  fecha o `aimReady`; enquanto ele estiver fechado, mira fora da zona morta é
+  ignorada. Reabre quando chega um pacote com o controle centrado. Cliente que
+  insista no mesmo arraste não bate na mesma direção de novo — bate sem direção
+  nenhuma, no ritmo do `ATTACK_INTERVAL`;
 - **sequência velha** — pacote com `s <= inputSeq` tem o vetor ignorado, mas
   ainda conta como sinal de vida (senão `INPUT_TIMEOUT_MS` mataria o movimento);
 - **"meu golpe foi carregado"** — quem cronometra é `World.releaseAttack`, com o
@@ -256,11 +264,61 @@ O golpe trafega como `ActorState.atkPower` (uint8, 0..100): é a potência **já
 decidida pelo servidor**, não o tempo de carga. Se cada lado recalculasse a
 partir do tempo, os arredondamentos divergiriam.
 
-**Forma de ataque nova exige cinco `switch` em sincronia**, três deles no
-cliente: `World.executeAttackHit` (dano) e `attackReach()`/`attackHalfBand()`
-(alcance da IA) aqui; `PlayerBase.drawAttackVisual`, `ArenaActor.drawAttackVisual`
-e o par `attackReach`/`attackHalfBand` lá. Esquecer os de alcance não quebra o
-golpe — só faz o bot mirar errado.
+A direção do golpe trafega como `ActorState.atkAngle` (float32, radianos): é o
+ângulo JÁ decidido aqui, não o vetor de mira nem um índice de direção — ver
+*Direção do golpe: contínua, sem quantização*.
+
+**Forma de ataque nova exige quatro funções em sincronia**, duas de cada lado:
+`attackShapes()` (o layout, em `sim/geometry.ts` aqui e em
+`utils/AttackGeometry.js` lá — o desenho do cliente e o dano daqui saem da MESMA
+função, não há mais `switch` paralelo por lado) e `attackReach()` (o alcance com
+que a IA decide atacar, em `constants.ts` e em `Hierarchy.js`). Esquecer o
+alcance não quebra o golpe — só faz o bot atacar cedo ou tarde demais.
+`attackHalfBand()` continua existindo nos dois lados como descrição da forma (e
+é testada aqui), mas saiu da decisão da IA: com o bot mirando NO alvo, o desvio
+perpendicular é zero e a faixa passaria sempre.
+
+### Uma mira, um golpe
+
+Não existe ataque contínuo. Segurar o botão não repete golpe nenhum: o
+`stepPlayer` tinha um `startCharge` por tick enquanto `attackHeld` estivesse de
+pé, e ele saiu. Hoje cada golpe nasce de uma mensagem `"a" 1`.
+
+A garantia do servidor não depende do cliente e é a mesma para jogador e bot:
+
+1. `beginAttack` **consome a mira** (`aimDx`/`aimDy` zerados) e fecha
+   `Actor.aimReady`;
+2. `setInput` só aceita direção nova com `aimReady` aberto, e ele só reabre com
+   um pacote reportando a mira dentro de `ATTACK_AIM_DEADZONE` — o controle de
+   volta ao centro;
+3. o bot decide de novo em `aimAt`, imediatamente antes de cada golpe (e antes
+   de soltar a carga). Como a mira foi zerada, bot que não decidisse bateria sem
+   direção — não há como reaproveitar a anterior.
+
+`attackHeld` continua no `Actor` como relato de entrada (o `INPUT_TIMEOUT_MS` o
+derruba, `kill` o limpa), mas não dispara mais nada.
+
+### Direção do golpe: contínua, sem quantização
+
+A direção do golpe é o **ângulo do vetor de mira**, contínua em 360°. Já foi
+encaixe em oito direções (múltiplos de 45°) e, antes, só o `flipX`.
+
+O cliente manda a mira crua (`ax`/`ay` no `"i"`); quem converte vetor em ângulo
+é `attackAimAngle` (em `constants.ts`, espelhada em `Hierarchy.js`), que aplica
+a `ATTACK_AIM_DEADZONE` e o fallback do `flipX`. `beginAttack` congela o
+resultado em `Actor.atkAngle`, e ele vai para o cliente em
+`ActorState.atkAngle` (**float32, radianos**) — o desenho usa o mesmo número que
+gerou o dano, como já era com `atkPower`. Trafegar um índice de direção seria
+reintroduzir a quantização.
+
+**Os bots usam o mesmo caminho**: `World.aimAt` preenche o `aimDx`/`aimDy` do
+próprio ator, mirando no centro da elipse do alvo, imediatamente antes de
+`beginAttack` (e de novo antes de soltar a carga, porque o alvo andou). Antes
+nenhum bot escrevia mira e todos caíam no `flipX`: só leste e oeste.
+
+`botCanHit` passou a medir o alcance **na direção do golpe** (`ellipseRadiusAt`
+em vez do raio em X) e perdeu o teste de faixa lateral: mirando no alvo, o
+desvio perpendicular é zero e `attackHalfBand` passaria sempre.
 
 ### Ataque carregado está DESLIGADO
 
@@ -505,17 +563,25 @@ no `CLAUDE.md` do cliente. O que vale saber antes de mexer aqui:
   tick, para desamarrar a agressividade de `TICK_MS`;
 - **a esquiva do bot sorteia UMA vez por golpe**, com a chave `attackHitAt` do
   atacante guardada em `dodgeRolledFor`. Sorteando a cada tick, os ~200 ms de
-  windup dariam ~4 chances e o bot esquivaria de tudo.
+  windup dariam ~4 chances e o bot esquivaria de tudo;
+- **o bot mira como o jogador**: `World.aimAt` escreve no mesmo `aimDx`/`aimDy`
+  do pacote de entrada, uma vez por golpe (e de novo antes de soltar a carga), e
+  o ângulo sai da mesma `attackAimAngle`. Antes nenhum bot escrevia mira e todos
+  batiam só a leste ou a oeste;
+- **`botCanHit` mede o alcance na direção do golpe** (`ellipseRadiusAt`, não o
+  raio em X) e não tem mais teste de faixa lateral — ver *Contratos com o
+  cliente*.
 
 ## Testes
 
 ```bash
-npm test   # 104 passando, 13 pendentes, ~13 s
+npm test   # 119 passando, 13 pendentes, ~13 s
 ```
 
 - **`test/World.test.ts`** — a simulação, sem socket nenhum: combate, XP,
   colisão contra o cenário, travessia do rio e da ponte, navegação dos bots,
-  cura na base, dash do cavalo, fim de partida. Roda em ~13 s porque decodifica a
+  cura na base, dash do cavalo, fim de partida, direção contínua do golpe e a
+  regra "uma mira, um golpe" (jogador e bot). Roda em ~13 s porque decodifica a
   máscara de verdade;
 - **`test/ArenaRoom.test.ts`** — a sala, com `@colyseus/testing`: slots, bots,
   `ack`, normalização de entrada, lobby, revanche, modos.

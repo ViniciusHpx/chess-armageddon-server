@@ -335,7 +335,7 @@ export class ArenaRoom extends Room {
         s.attacking = actor.attacking;
         s.atkPower = Math.round(actor.chargePower * 100);
         s.atkSide = actor.atkSide;
-        s.atkDir = actor.atkDir;
+        s.atkAngle = actor.atkAngle;
         s.dashing = actor.isDashing(this.world.now);
         // Bots não têm botão para desenhar: economiza um byte por patch por bot.
         s.dashCd = actor.isBot

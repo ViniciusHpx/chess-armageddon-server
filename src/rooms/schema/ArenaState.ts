@@ -56,16 +56,17 @@ export class ActorState extends Schema {
     @type("int8") atkSide: number = 1;
 
     /**
-     * Direção do golpe em curso, como índice em `ATTACK_DIR_COUNT` (0..7).
+     * Direção do golpe em curso, em RADIANOS, contínua em 360°.
      *
-     * Trafega o ÍNDICE, e não o ângulo, pelo mesmo motivo de `atkPower`
-     * trafegar a potência final: os dois lados derivam o ângulo do mesmo
-     * índice, então a forma desenhada é exatamente a que causou o dano — se
-     * cada um convertesse um ângulo, os arredondamentos divergiriam.
+     * Trafega o ÂNGULO JÁ DECIDIDO pelo servidor (não o vetor de mira, nem um
+     * índice de direção), pelo mesmo motivo de `atkPower` trafegar a potência
+     * final: o cliente desenha o mesmo número que gerou o dano, então não há
+     * conta repetida de cada lado para divergir.
      *
-     * A ORDEM da lista é contrato de rede, como `RANK_ORDER`.
+     * `float32` porque a direção deixou de ser uma lista de oito: encaixá-la
+     * de volta num inteiro seria reintroduzir a quantização que se removeu.
      */
-    @type("uint8") atkDir: number = 0;
+    @type("float32") atkAngle: number = 0;
 
     /**
      * Dash em curso. Só serve para o cliente disparar o efeito visual dos

@@ -6,7 +6,7 @@
  * avaliam, e uma divergência faz o golpe acertar fora do que aparece na tela.
  */
 import { clamp } from "./mathx.js";
-import { AttackConfig, attackDirAngle } from "./constants.js";
+import { AttackConfig } from "./constants.js";
 
 export interface Rect { x: number; y: number; w: number; h: number }
 
@@ -129,7 +129,7 @@ export type AttackShape =
  * @param mult Multiplicador de área da carga (`chargeAreaMult(power)`).
  * @param centerX,centerY Centro da elipse do atacante.
  * @param rx,ry Raios da elipse do atacante.
- * @param angle Direção do golpe (`attackDirAngle(atkDir)`).
+ * @param angle Direção do golpe, em radianos (`Actor.atkAngle`).
  * @param side Lado da perna do L, -1 ou 1, medido na PERPENDICULAR ao golpe.
  */
 export function attackShapes(
@@ -235,9 +235,8 @@ export function attackShapeHitsEllipse(
  * Fora do eixo X, comparar Y do mundo mandaria a perna para o lado errado.
  */
 export function attackSideFor(
-    dir: number, fromX: number, fromY: number, toX: number, toY: number,
+    angle: number, fromX: number, fromY: number, toX: number, toY: number,
 ): number {
-    const angle = attackDirAngle(dir);
     const px = -Math.sin(angle);
     const py = Math.cos(angle);
     return (toX - fromX) * px + (toY - fromY) * py > 0 ? 1 : -1;

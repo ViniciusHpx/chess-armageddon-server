@@ -379,56 +379,59 @@ export const ATTACK_RECOVERY_MAX_MS = 340;
 // ---------------------------------------------------------------------------
 // DIREÇÃO DO GOLPE
 //
-// O golpe já saiu preso ao eixo X: a direção era o `flipX`, ou seja, leste ou
-// oeste. Hoje ela é uma das OITO direções, escolhida pelo jogador no controle
-// de ataque, e independente de para onde ele anda.
+// O golpe já saiu preso ao eixo X (a direção era o `flipX`: leste ou oeste) e
+// depois passou por uma fase de OITO direções, em que o vetor da mira era
+// encaixado no múltiplo de 45° mais próximo. Hoje não há encaixe nenhum: a
+// direção é o ÂNGULO do vetor de mira, contínuo em todos os 360°.
 //
-// O que trafega é o ÍNDICE (0..7), não o ângulo — mesmo motivo de `atkPower`
-// trafegar a potência final em vez do tempo de carga: os dois lados derivam o
-// ângulo do mesmo índice, então não existe arredondamento para divergir, e o
-// desenho é exatamente a área que causou o dano.
+// O que trafega é o ÂNGULO EM RADIANOS já decidido pelo servidor
+// (`ActorState.atkAngle`, float32), pelo mesmo motivo de `atkPower` trafegar a
+// potência final em vez do tempo de carga: o cliente desenha exatamente o
+// número que o servidor usou para calcular o dano, então não existe conta
+// repetida de cada lado para divergir.
 //
-// A ORDEM é contrato de rede, como `RANK_ORDER`: índice 0 é leste e a lista
-// gira no sentido do Y da tela (que cresce para BAIXO), então 2 é sul e 6 é
-// norte. Não reordene de um lado só.
+// O que o cliente manda continua sendo o VETOR cru da mira (`ax`/`ay` no
+// pacote de entrada) — quem transforma vetor em ângulo é `attackAimAngle`, dos
+// dois lados, e é ela também que aplica a zona morta e o fallback do `flipX`.
 // ---------------------------------------------------------------------------
-
-export const ATTACK_DIR_COUNT = 8;
-
-/** Ângulo entre duas direções vizinhas (45°). */
-const ATTACK_DIR_STEP = (Math.PI * 2) / ATTACK_DIR_COUNT;
 
 /**
  * Módulo mínimo do vetor de mira para ele valer como direção.
  *
  * Abaixo disto o toque conta como "sem mira" e o golpe sai para onde a peça
- * olha (o `flipX`), que é o comportamento de sempre — é o que mantém teclado e
- * bots exatamente como eram. Também evita que um encostão no controle mande o
- * golpe para um lado aleatório.
+ * olha (o `flipX`), que é o comportamento de sempre — é o que mantém o teclado
+ * exatamente como era. Também evita que um encostão no controle mande o golpe
+ * para um lado aleatório.
  */
 export const ATTACK_AIM_DEADZONE = 0.35;
 
-/** Direção (0..7) mais próxima de um vetor de mira. */
-export function attackDirIndex(ax: number, ay: number): number {
-    const i = Math.round(Math.atan2(ay, ax) / ATTACK_DIR_STEP);
-    return ((i % ATTACK_DIR_COUNT) + ATTACK_DIR_COUNT) % ATTACK_DIR_COUNT;
-}
-
-/** Ângulo, em radianos, de uma direção de ataque. */
-export function attackDirAngle(dir: number): number {
-    const i = ((Math.round(dir) % ATTACK_DIR_COUNT) + ATTACK_DIR_COUNT) % ATTACK_DIR_COUNT;
-    return i * ATTACK_DIR_STEP;
+/**
+ * Direção do golpe, em radianos, a partir do vetor de mira. SEM quantização:
+ * o ângulo é o do vetor, e não o múltiplo de 45° mais próximo.
+ *
+ * Fonte única da regra, espelhada em `Hierarchy.js` do cliente e usada por
+ * jogadores E bots (os bots preenchem o mesmo `aimDx`/`aimDy`, mirando no
+ * alvo). Vetor não finito, zerado ou dentro da zona morta cai no `flipX`.
+ *
+ * @param flipX A peça olha para oeste?
+ */
+export function attackAimAngle(ax: number, ay: number, flipX: boolean): number {
+    if (Number.isFinite(ax) && Number.isFinite(ay)
+        && Math.hypot(ax, ay) >= ATTACK_AIM_DEADZONE) {
+        return Math.atan2(ay, ax);
+    }
+    return flipX ? Math.PI : 0;
 }
 
 /**
- * Espera MÍNIMA entre o início de dois golpes, em ms. É o botão de
- * balanceamento do ataque contínuo.
+ * Espera MÍNIMA entre o início de dois golpes, em ms.
  *
- * Segurar o controle de ataque repete o golpe sozinho, e sem este piso a
- * cadência seria a soma windup + recuperação do golpe leve (160 + 60 = 220 ms,
- * ou seja 4,5 golpes por segundo) — o personagem viraria uma máquina de bater.
- * Com 420 ms dá ~2,4 por segundo: sobra ritmo entre um golpe e o outro sem o
- * ataque ficar lerdo.
+ * Segurar o controle NÃO repete golpe: uma mira rende um golpe, e a próxima
+ * exige o controle de volta ao centro (ver `World.setInput` e `beginAttack`).
+ * Este piso é o teto de CADÊNCIA de quem mira rápido — e o que sobra de freio
+ * contra um cliente que reenvie `"a" 1` em rajada. Sem ele a cadência seria a
+ * soma windup + recuperação do golpe leve (160 + 60 = 220 ms, ou seja 4,5
+ * golpes por segundo). Com 420 ms dá ~2,4 por segundo.
  *
  * Entra como PISO do `attackReadyAt`, o mesmo gate que já era o freio de spam
  * (ver `beginAttack`) — não existe um segundo temporizador. Como o piso é um

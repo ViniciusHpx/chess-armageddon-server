@@ -87,13 +87,14 @@ export class Actor {
     atkSide = 1;
 
     /**
-     * Direção do golpe em curso, como índice em 0..`ATTACK_DIR_COUNT`.
+     * Direção do golpe em curso, em RADIANOS. Contínua em 360°: é o ângulo do
+     * vetor de mira (`attackAimAngle`), sem encaixe em direção nenhuma.
      *
      * Congelada em `beginAttack`, pelo mesmo motivo de `atkSide`: o cliente
      * desenha esta direção durante todo o golpe, então mudá-la no meio faria o
      * dano sair de onde não apareceu.
      */
-    atkDir = 0;
+    atkAngle = 0;
     /** Alvos já atingidos pelo golpe atual — evita dano duplo. */
     hitThisAttack = new Set<string>();
 
@@ -183,12 +184,30 @@ export class Actor {
      *
      * Chega no mesmo pacote `"i"` do movimento, e por isso é lido do mesmo
      * jeito que `requestDash` lê a direção — "a última entrada recebida". Não
-     * precisa ser unitário; quem decide o que ele significa é `World.attackDir`,
-     * que aplica a zona morta e o encaixe nas oito direções. Neutro (zerado)
-     * significa "sem mira", e aí o golpe sai para onde a peça olha.
+     * precisa ser unitário; quem decide o que ele significa é `attackAimAngle`,
+     * que aplica a zona morta e devolve o ângulo CONTÍNUO do vetor. Neutro
+     * (zerado) significa "sem mira", e aí o golpe sai para onde a peça olha.
+     *
+     * Os BOTS escrevem aqui também (`World.aimAt`): a direção do golpe deles
+     * sai do mesmo vetor, pela mesma função, sem caminho paralelo.
      */
     aimDx = 0;
     aimDy = 0;
+
+    /**
+     * O cliente pode ARMAR uma direção nova?
+     *
+     * Uma direção vale por UM golpe: `beginAttack` a consome e fecha esta
+     * porta; ela só reabre quando chega um pacote com a mira dentro da zona
+     * morta, isto é, com o controle de volta ao centro. No intervalo, uma mira
+     * fora da zona morta é ignorada (ver `World.setInput`) — é o que impede
+     * transformar um arraste parado em golpe atrás de golpe.
+     *
+     * Começa aberta: quem nunca atacou não tem nada a renovar. Não vale para
+     * bots, que não passam por `setInput` (a mira deles é decidida em
+     * `World.aimAt`, uma vez por golpe).
+     */
+    aimReady = true;
 
     /**
      * Botão de ataque SEGURADO.

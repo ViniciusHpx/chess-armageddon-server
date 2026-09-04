@@ -18,7 +18,9 @@ import { Actor } from "./Actor.js";
 import { CollisionMask } from "./CollisionMask.js";
 import { NavGrid } from "./NavGrid.js";
 import { resolveCollisions } from "./CollisionResolver.js";
-import { attackShapes, attackShapeHitsEllipse, attackSideFor } from "./geometry.js";
+import {
+    attackShapes, attackShapeHitsEllipse, attackSideFor, ellipseRadiusAt,
+} from "./geometry.js";
 import { angleBetween, clamp, distance, randInt } from "./mathx.js";
 import {
     BOT_ATTACK_COOLDOWN_MS, BOT_ATTACK_RANGE_SLACK, movementFactor,
@@ -33,10 +35,10 @@ import {
     BOT_DASH_COOLDOWN_MS, BOT_DODGE_CHANCE, BOT_DODGE_RANGE_SLACK, BOT_DODGE_REACTION_MS,
     DASH_COOLDOWN_MS, DASH_DISTANCE, DASH_INVULN_MS, DASH_SPEED, DASH_TIMEOUT_MS,
     DASH_STOP_PUSHBACK, BASE_HEAL_PER_SECOND, insideHealZone, canPhaseDash,
-    attackHalfBand, attackReach, knockbackSpeed, XP_PER_KILL,
+    attackReach, knockbackSpeed, XP_PER_KILL,
     attackRecoveryMs, attackWindupMs, chargeAreaMult, chargeDamage, chargePower,
     CHARGED_ATTACK_ENABLED,
-    ATTACK_AIM_DEADZONE, ATTACK_INTERVAL, attackDirAngle, attackDirIndex,
+    ATTACK_AIM_DEADZONE, ATTACK_INTERVAL, attackAimAngle,
 } from "./constants.js";
 
 /** Evento de combate emitido para o cliente reagir (som, shake, feedback). */
@@ -295,10 +297,46 @@ export class World {
         actor.inputDy = clamp(dy, -1, 1);
         actor.inputSeq = seq;
 
-        // A mira só precisa da DIREÇÃO, então basta limitar o módulo para o
-        // cliente não inflar a zona morta com um vetor gigante.
-        actor.aimDx = Number.isFinite(ax) ? clamp(ax, -1, 1) : 0;
-        actor.aimDy = Number.isFinite(ay) ? clamp(ay, -1, 1) : 0;
+        // A mira só precisa da DIREÇÃO, então o módulo é limitado a 1 para o
+        // cliente não inflar a zona morta com um vetor gigante. A limitação é
+        // por NORMALIZAÇÃO, não por clamp de cada eixo: com o ângulo contínuo,
+        // cortar os eixos separadamente giraria a mira (9999, 1000) para 45°
+        // em vez dos 6° que o jogador apontou. Vetor não finito vira neutro.
+        if (!Number.isFinite(ax) || !Number.isFinite(ay)) {
+            actor.aimDx = 0;
+            actor.aimDy = 0;
+            actor.aimReady = true;
+            return;
+        }
+
+        const aimLen = Math.sqrt(ax * ax + ay * ay);
+
+        // Controle CENTRADO: não há direção, e a próxima que passar da zona
+        // morta vale como direção NOVA.
+        if (aimLen < ATTACK_AIM_DEADZONE) {
+            actor.aimDx = 0;
+            actor.aimDy = 0;
+            actor.aimReady = true;
+            return;
+        }
+
+        // Direção já gasta por um golpe e ainda não renovada: o cliente segue
+        // reportando o mesmo arraste, e ele é IGNORADO. É esta guarda que
+        // impede reusar uma mira para golpe atrás de golpe — a regra é do
+        // servidor, não da boa vontade do cliente. Um cliente honesto nem
+        // chega aqui: o controle dele reporta neutro até recentrar.
+        if (!actor.aimReady) {
+            actor.aimDx = 0;
+            actor.aimDy = 0;
+            return;
+        }
+
+        if (aimLen > 1) {
+            ax /= aimLen;
+            ay /= aimLen;
+        }
+        actor.aimDx = ax;
+        actor.aimDy = ay;
     }
 
     startCharge(actor: Actor): void {
@@ -648,18 +686,21 @@ export class World {
             return;
         }
 
-        // ATAQUE CONTÍNUO: com o botão segurado o golpe se repete sozinho, e
-        // quem dá o ritmo é o `attackReadyAt` — cujo piso é `ATTACK_INTERVAL`.
+        // NÃO existe ataque contínuo: segurar o botão não repete golpe nenhum.
         //
-        // Chamar isto todo tick é seguro e é justamente o ponto: `startCharge`
-        // sai na hora se o ator já está atacando, carregando ou em recuperação,
-        // então não existe caminho para dois golpes saírem juntos nem para um
-        // temporizador paralelo se acumular. Fica depois do dash porque quem
-        // está no impulso não ataca.
+        // Aqui havia um `startCharge` por tick enquanto `attackHeld` estivesse
+        // de pé, e era ele que transformava uma mira só numa sequência de
+        // golpes no ritmo do `attackReadyAt`. Hoje cada golpe nasce de uma
+        // MENSAGEM `"a" 1`, e cada mensagem dessas custa, no cliente, uma
+        // direção nova no controle de ataque. `attackHeld` continua existindo
+        // como relato de entrada (é ele que o `INPUT_TIMEOUT_MS` derruba e o
+        // `kill` limpa), mas não dispara mais nada.
         //
-        // Só vale com a carga desligada: com `CHARGED_ATTACK_ENABLED`, segurar
-        // o botão significa CARREGAR, e repetir atropelaria a carga.
-        if (actor.attackHeld && !CHARGED_ATTACK_ENABLED) this.startCharge(actor);
+        // Do lado de cá a garantia é outra e não depende do cliente: o golpe
+        // CONSOME a mira (ver `beginAttack`), e uma mira já consumida só volta
+        // a valer depois de o cliente reportar o controle centrado (ver
+        // `setInput`). Cliente adulterado que reenvie `"a" 1` em rajada cai no
+        // `attackReadyAt`/`ATTACK_INTERVAL` e bate sem direção nenhuma.
 
         // Golpe em curso anda devagar; carregando, mais devagar ainda; dentro
         // d'água, mais devagar ainda. O fator sai de `movementFactor`, o mesmo
@@ -736,6 +777,9 @@ export class World {
         const chance = 1 - Math.exp(-BOT_ATTACK_RATE_PER_SECOND * (deltaMs / 1000));
         if (Math.random() >= chance) return;
 
+        // MIRA do bot: o golpe dele sai na direção do alvo, contínua, pelo
+        // mesmo `aimDx`/`aimDy` e pela mesma `attackAimAngle` do jogador.
+        this.aimAt(actor, nearest);
         actor.flipX = nearest.x < actor.x;
 
         if (this.botShouldCharge(nearest, alcancaNormal, alcancaCarregado)) {
@@ -1011,6 +1055,9 @@ export class World {
         const esperouDemais = elapsed - actor.rank.chargeTime >= BOT_CHARGE_HOLD_MS;
         if (!this.botCanHit(actor, nearest, chargeAreaMult(1)) && !esperouDemais) return;
 
+        // Mira refeita no momento de SOLTAR: o alvo andou enquanto o bot
+        // carregava, e é o instante do golpe que congela a direção.
+        this.aimAt(actor, nearest);
         actor.flipX = nearest.x < actor.x;
         this.releaseAttack(actor);
         actor.attackCooldown = BOT_ATTACK_COOLDOWN_MS;
@@ -1035,14 +1082,24 @@ export class World {
         const to = target.ellipseCenter();
         const dx = to.x - from.x;
         const dy = to.y - from.y;
+        const dist2 = dx * dx + dy * dy;
+        if (dist2 === 0) return true;
 
-        const reach = actor.collisionRx + attackReach(actor.rank) * mult
-            + target.collisionRx + BOT_ATTACK_RANGE_SLACK;
+        // A conta é feita na DIREÇÃO em que o golpe vai sair — que é a do
+        // alvo, porque é isso que `aimAt` escreve logo antes de atacar. Daí
+        // não haver mais teste de faixa lateral: mirando no alvo, o desvio
+        // perpendicular é zero e a faixa (`attackHalfBand`) passaria sempre.
+        // Restou o alcance, agora medido da BORDA da elipse na direção do
+        // golpe (`ellipseRadiusAt`) e não do raio em X — com o ataque preso ao
+        // eixo X os dois eram a mesma coisa, fora dele o raio em X inflaria o
+        // alcance do bot para cima e para baixo.
+        const angle = Math.atan2(dy, dx);
+        const reach = ellipseRadiusAt(actor.collisionRx, actor.collisionRy, angle)
+            + attackReach(actor.rank) * mult
+            + ellipseRadiusAt(target.collisionRx, target.collisionRy, angle)
+            + BOT_ATTACK_RANGE_SLACK;
         // Compara os quadrados: evita a raiz quadrada a cada tick por bot.
-        if (dx * dx + dy * dy > reach * reach) return false;
-
-        // `Infinity` nos golpes radiais passa direto, sem ramificação extra.
-        return Math.abs(dy) <= attackHalfBand(actor.rank) * mult + target.collisionRy;
+        return dist2 <= reach * reach;
     }
 
     // -----------------------------------------------------------------------
@@ -1071,18 +1128,41 @@ export class World {
     }
 
     /**
-     * Direção do golpe que está saindo agora.
+     * Direção do golpe que está saindo agora, em RADIANOS e sem quantização.
      *
      * A mira manda, se houver; sem mira (zona morta) o golpe sai para o lado
-     * que a peça olha, que é o comportamento de sempre. É esse fallback que
-     * mantém teclado e BOTS idênticos ao que eram: nenhum dos dois escreve em
-     * `aimDx`/`aimDy`.
+     * que a peça olha, que é o comportamento de sempre — é esse fallback que
+     * mantém o teclado idêntico ao que era. Os BOTS passam por aqui pelo mesmo
+     * caminho: `aimAt` preenche `aimDx`/`aimDy` antes do golpe.
      */
-    private attackDir(actor: Actor): number {
-        if (Math.hypot(actor.aimDx, actor.aimDy) >= ATTACK_AIM_DEADZONE) {
-            return attackDirIndex(actor.aimDx, actor.aimDy);
-        }
-        return attackDirIndex(actor.flipX ? -1 : 1, 0);
+    private attackAngle(actor: Actor): number {
+        return attackAimAngle(actor.aimDx, actor.aimDy, actor.flipX);
+    }
+
+    /**
+     * Mira do BOT: o vetor unitário do centro da elipse dele para a do alvo.
+     *
+     * Escreve no MESMO `aimDx`/`aimDy` que o pacote de entrada do jogador
+     * preenche, então bot e humano chegam ao ângulo pela mesma função e o bot
+     * também bate em qualquer direção dos 360°. Antes nenhum bot escrevia mira
+     * nenhuma e todos caíam no fallback do `flipX`: só leste e oeste.
+     *
+     * É chamada IMEDIATAMENTE antes de cada golpe (e de novo antes de soltar a
+     * carga), nunca uma vez só: como `beginAttack` zera a mira, um bot que não
+     * decidisse de novo bateria sem direção. A regra "uma direção, um golpe"
+     * vale para ele pelo mesmo caminho do jogador — o que muda é só quem
+     * decide. Não passa pelo `aimReady`, que é a trava do que o CLIENTE alega;
+     * aqui quem escreve é o próprio servidor.
+     */
+    private aimAt(actor: Actor, target: Actor): void {
+        const from = actor.ellipseCenter();
+        const to = target.ellipseCenter();
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len === 0) return;
+        actor.aimDx = dx / len;
+        actor.aimDy = dy / len;
     }
 
     private beginAttack(actor: Actor, power: number): void {
@@ -1106,11 +1186,19 @@ export class World {
         // Direção e lado da perna do L ficam CONGELADOS aqui: o cliente desenha
         // os dois durante todo o golpe, então recalcular no impacto (como no
         // offline) faria o dano sair de um lugar diferente do que apareceu.
-        actor.atkDir = this.attackDir(actor);
+        actor.atkAngle = this.attackAngle(actor);
+
+        // MIRA CONSUMIDA: uma direção, um golpe. A direção que virou este golpe
+        // deixa de existir, e o `aimReady` fecha a porta para a próxima até o
+        // controle voltar ao centro (ver `setInput`). Vale para jogador e bot —
+        // o bot torna a decidir em `aimAt`, antes de cada golpe.
+        actor.aimDx = 0;
+        actor.aimDy = 0;
+        actor.aimReady = false;
 
         const nearest = this.findNearestOpponent(actor);
         actor.atkSide = nearest
-            ? attackSideFor(actor.atkDir, actor.x, actor.y, nearest.x, nearest.y)
+            ? attackSideFor(actor.atkAngle, actor.x, actor.y, nearest.x, nearest.y)
             : -1;
     }
 
@@ -1132,7 +1220,7 @@ export class World {
         const forma = attackShapes(
             attacker.rank.attack, mult, center.x, center.y,
             attacker.collisionRx, attacker.collisionRy,
-            attackDirAngle(attacker.atkDir), attacker.atkSide,
+            attacker.atkAngle, attacker.atkSide,
         );
 
         for (const target of this.opponentsOf(attacker)) {
